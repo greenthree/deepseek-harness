@@ -69,6 +69,14 @@ exports[`sidebar shell snapshots > renders the collapsed rail after the crossfad
       />
     </div>
     <div
+      class="probHubArea"
+    >
+      <div
+        data-slot="sidebar.probhub"
+        style="display: contents;"
+      />
+    </div>
+    <div
       class="footArea"
     >
       <div
@@ -195,6 +203,20 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
       />
     </div>
     <div
+      class="probHubArea"
+    >
+      <div
+        data-slot="sidebar.probhub"
+        style="display: contents;"
+      >
+        <div
+          class="probHubNotice"
+        >
+          ProbHub 未连接
+        </div>
+      </div>
+    </div>
+    <div
       class="footArea"
     >
       <div
@@ -319,6 +341,20 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
         data-slot="sidebar.workspaces"
         style="display: contents;"
       />
+    </div>
+    <div
+      class="probHubArea"
+    >
+      <div
+        data-slot="sidebar.probhub"
+        style="display: contents;"
+      >
+        <div
+          class="probHubNotice"
+        >
+          ProbHub 未连接
+        </div>
+      </div>
     </div>
     <div
       class="footArea"

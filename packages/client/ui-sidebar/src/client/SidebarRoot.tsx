@@ -42,6 +42,7 @@ const SCROLLBAR_LINGER_MS = 2000
 export function SidebarRoot({
   collapsed,
   width,
+  probHub,
   startSession,
   toggleSidebar,
   t,
@@ -194,6 +195,10 @@ export function SidebarRoot({
           wide,
           expandSidebar: () => { if (collapsed) toggleSidebar() },
         })}
+      </div>
+
+      <div className={css.probHubArea}>
+        {renderSlot('sidebar.probhub', { wide, probHub })}
       </div>
 
       {/* Footer actions stack above Settings in both sidebar widths. */}

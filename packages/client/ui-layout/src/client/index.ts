@@ -10,6 +10,7 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { PanelActions } from './service.ts'
+import type { ProbHubControllerState } from './probhub-controller.ts'
 import { AppFrame } from './AppFrame.tsx'
 import { createLayoutStore } from './stores.ts'
 import { LayoutController } from './service.ts'
@@ -22,6 +23,8 @@ import { ThemePresenter } from './theme-presenter.ts'
 // against; the frame components and the store factory are package-internal.
 export { LayoutController } from './service.ts'
 export type { ILayout } from './service.ts'
+export type { ProbHubControllerState } from './probhub-controller.ts'
+export type { ProbHubOverview, ProbHubProblem } from './ProbHubWorkbench.tsx'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -96,6 +99,8 @@ export interface SidebarOwnerProps {
   collapsed: boolean
   /** Rendered column width in px (SIDEBAR_COLLAPSED when collapsed). */
   width: number
+  /** Read-only ProbHub projection owned by the layout frame and passed down to the sidebar slot. */
+  probHub?: ProbHubControllerState | undefined
 }
 
 /** Conversation owner share: business state and actions belong to the registrant. */
