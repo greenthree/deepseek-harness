@@ -90,6 +90,47 @@ describe('ProbHub background tools', () => {
     expect(ctx.jobs.read('probhub-1' as never, agent).text).toContain('all_expectations_met')
   })
 
+  it('maps non-success Core JSON to a failed job and preserves the bounded diagnostic', async () => {
+    const { ctx, agent } = await setup(
+      JSON.stringify({
+        ok: false,
+        problems: { A01: { ok: false, final: { status: 'failed', code: 'judge_timeout' } } },
+      }),
+      'workspace-write',
+      true,
+    )
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('core-failed'),
+      name: 'probhub_judge',
+      arguments: { problem_id: 'A01' },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    const snapshot = await ctx.jobs.wait(id, 1000, agent)
+    expect(snapshot).toMatchObject({ status: 'failed', detail: 'judge_timeout' })
+    expect(ctx.jobs.read(id, agent).text).toContain('judge_timeout')
+  })
+
+  it('gives cleanup failure precedence over a Core cancellation result', async () => {
+    const { ctx, agent } = await setup(
+      JSON.stringify({ ok: false, status: 'cancelled', code: 'process_cleanup_failed' }),
+      'workspace-write',
+      true,
+    )
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('core-cleanup-failed'),
+      name: 'probhub_judge',
+      arguments: { problem_id: 'A01' },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    await expect(ctx.jobs.wait(id, 1000, agent)).resolves.toMatchObject({ status: 'failed', detail: 'cleanup_failed' })
+  })
+
   it('rejects invalid IDs and refuses a read-only session without starting a process', async () => {
     const { ctx, agent, spawned } = await setup(undefined, 'read-only')
     await expect(ctx.tools.execute({ signal: new AbortController().signal, callId: CallId('read-only'), name: 'probhub_judge', arguments: { problem_id: 'A01' }, agent })).resolves.toMatchObject({ isError: true })

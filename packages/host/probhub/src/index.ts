@@ -403,7 +403,37 @@ function coreOutcomeDetail(value: unknown): string | undefined {
 }
 
 function coreCancelled(value: unknown): boolean {
-  return isRecord(value) && (value.code === 'cancelled' || value.status === 'cancelled')
+  if (Array.isArray(value)) return value.some(coreCancelled)
+  if (!isRecord(value)) return false
+  if (value.code === 'cancelled' || value.status === 'cancelled') return true
+  return Object.values(value).some(coreCancelled)
+}
+
+function coreCleanupFailed(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(coreCleanupFailed)
+  if (!isRecord(value)) return false
+  const code = typeof value.code === 'string' ? value.code : undefined
+  const status = typeof value.status === 'string' ? value.status : undefined
+  if (code?.includes('cleanup_failed') === true || status?.includes('cleanup_failed') === true) return true
+  return Object.values(value).some(coreCleanupFailed)
+}
+
+function coreFailureDetail(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const detail = coreFailureDetail(item)
+      if (detail !== undefined) return detail
+    }
+    return undefined
+  }
+  if (!isRecord(value)) return undefined
+  if (typeof value.code === 'string') return value.code
+  if (typeof value.status === 'string' && value.status !== 'passed') return value.status
+  for (const item of Object.values(value)) {
+    const detail = coreFailureDetail(item)
+    if (detail !== undefined) return detail
+  }
+  return undefined
 }
 
 /**
@@ -495,20 +525,24 @@ export function createCoreJobHooks(
         const stderr = handle.collected.stderr?.readFrom(0)
         void stderr
         const text = stdout?.text ?? ''
-        if (processOutcome.signal === null && processOutcome.exitCode !== null && stdout?.lossy !== true && text.length > 0) {
+        if (cancelError !== undefined) {
+          outcome = { status: 'failed', detail: 'cancel_request_failed' }
+        } else if (processOutcome.signal === null && processOutcome.exitCode === 0 && stdout?.lossy !== true && text.length > 0) {
           try {
             const value = JSON.parse(text) as unknown
             const detail = coreOutcomeDetail(value)
-            outcome = coreCancelled(value)
-              ? { status: 'killed', detail: 'cancelled', output: text }
-              : { status: 'completed', output: text, ...(detail === undefined ? {} : { detail }) }
+            outcome = coreCleanupFailed(value)
+              ? { status: 'failed', detail: 'cleanup_failed', output: text }
+              : coreCancelled(value)
+                ? { status: 'killed', detail: 'cancelled', output: text }
+                : isRecord(value) && value.ok === true
+                  ? { status: 'completed', output: text, ...(detail === undefined ? {} : { detail }) }
+                  : { status: 'failed', detail: coreFailureDetail(value) ?? 'core_failed', output: text }
           } catch {
             outcome = { status: 'failed', detail: 'core_failed' }
           }
         } else if (cancelRequested) {
           outcome = { status: 'killed', detail: 'cancelled' }
-        } else if (cancelError !== undefined) {
-          outcome = { status: 'failed', detail: 'cancel_request_failed' }
         } else if (processOutcome.signal !== null || processOutcome.exitCode === null) {
           outcome = { status: 'failed', detail: 'core_process_terminated' }
         } else {
@@ -516,7 +550,7 @@ export function createCoreJobHooks(
         }
       }
     } catch {
-      outcome = { status: cancelRequested ? 'killed' : 'failed', detail: cancelRequested ? 'cancelled' : 'core_failed' }
+      outcome = { status: 'failed', detail: cancelError === undefined ? 'core_failed' : 'cancel_request_failed' }
     }
     try {
       rmSync(temp, { recursive: true, force: false })
