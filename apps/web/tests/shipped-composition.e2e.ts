@@ -35,7 +35,7 @@ const FILE_REFERENCE_PROMPT = fileURLToPath(new URL(
  */
 const EXPECTED_TOOLS = [
   'ask_user_question',
-  'bash',
+  ...(process.platform === 'win32' ? [] : ['bash']),
   'create_goal',
   'edit',
   'exit_plan_mode',
@@ -45,6 +45,11 @@ const EXPECTED_TOOLS = [
   'job_list',
   'job_output',
   'list_agents',
+  'probhub_judge',
+  'probhub_judge_qa',
+  'probhub_mutation',
+  'probhub_stress',
+  ...(process.platform === 'win32' ? ['pwsh'] : []),
   'ralph',
   'read',
   'read_image',

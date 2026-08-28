@@ -1,6 +1,8 @@
 /** Read-only HTTP bridge from a Harness session to ProbHub Core. */
 
 import { realpath, stat } from 'node:fs/promises'
+import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
@@ -11,19 +13,20 @@ import type { SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
-import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import type { SubprocessHandle, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import z from '@deepseek-ai/schemastery'
+import type { JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs'
 
 /** Core command configuration for the bridge. */
 export interface Config {
   /** Node script path for the installed ProbHub Core CLI. */
-  command: string
+  command?: string
   /** Maximum Core stdout/stderr bytes retained per request. */
-  maxOutputBytes: number
+  maxOutputBytes?: number
   /** Maximum time spent waiting for a read-only Core operation. */
-  timeoutMs: number
+  timeoutMs?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -31,6 +34,30 @@ export const Config: z<Config> = z.object({
   maxOutputBytes: z.natural().min(1024).default(1024 * 1024),
   timeoutMs: z.natural().min(1).default(15_000),
 })
+
+/** Operations exposed by the background ProbHub validation producer. */
+export type CoreOperation = 'judge' | 'stress' | 'judge-qa' | 'mutation'
+
+/** A validated Core operation request. Paths are always derived from Session cwd. */
+export interface CoreJobRequest {
+  readonly operation: CoreOperation
+  readonly problemId: string
+  readonly args?: readonly string[]
+  readonly session: Session
+  readonly workspace: string
+}
+
+/** Runner settings shared by the read-only bridge and background producer. */
+export interface CoreRunnerConfig {
+  readonly command: string
+  readonly maxOutputBytes: number
+}
+
+/** Safe defaults used when the background producer is mounted directly. */
+export const DEFAULT_CORE_RUNNER_CONFIG: CoreRunnerConfig = {
+  command: 'probhub/bin/probhub.js',
+  maxOutputBytes: 1024 * 1024,
+}
 
 /** Public bridge namespace used by the WebUI. */
 export const PROBHUB_PATH = '/probhub'
@@ -66,7 +93,7 @@ interface SessionRef {
 }
 
 /** Registers the `/probhub` read-only route family. */
-export function apply(ctx: Context, config?: Partial<Config>): void {
+export function apply(ctx: Context, config: Config = {}): void {
   const resolved: Config = {
     command: config?.command ?? 'probhub/bin/probhub.js',
     maxOutputBytes: config?.maxOutputBytes ?? 1024 * 1024,
@@ -216,6 +243,14 @@ async function resolveWorkspace(cwd: string | undefined): Promise<{ kind: 'ok'; 
   return { kind: 'ok', value: { cwd: canonical, workspaceId: createHash('sha256').update(canonical).digest('hex'), schemaVersion: 1 } }
 }
 
+/** Resolve and validate the canonical workspace belonging to one live Session. */
+export async function resolveWorkspaceForSession(session: Session): Promise<ResolvedWorkspace> {
+  const result = await resolveWorkspace(session.header.cwd)
+  if (result.kind === 'ok') return result.value
+  if (result.kind === 'missing') throw new Error('Workspace Schema v1 is required; migrate this old workspace first')
+  throw new Error(result.error)
+}
+
 interface CoreResult { readonly adapterOk: boolean; readonly coreOk: boolean; readonly value: unknown; readonly error?: string }
 
 function migrationCode(value: unknown): string | undefined {
@@ -350,6 +385,151 @@ function resolveCoreScript(command: string): string {
     return createRequire(import.meta.url).resolve(command)
   }
   throw new Error('probhub: command must be an absolute script path or a probhub package path')
+}
+
+function coreOutcomeDetail(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.code === 'string') return value.code
+  if (typeof value.status === 'string') return value.status
+  return undefined
+}
+
+function coreCancelled(value: unknown): boolean {
+  return isRecord(value) && (value.code === 'cancelled' || value.status === 'cancelled')
+}
+
+/**
+ * Start one detached, workspace-write Core operation as a generic job producer.
+ * The producer owns only the child process and its cancellation marker; Core
+ * remains responsible for locks, snapshots, evidence and transactional writes.
+ */
+export function createCoreJobHooks(
+  ctx: Context,
+  config: CoreRunnerConfig,
+  request: CoreJobRequest,
+): JobHooks {
+  const subprocess = ctx.get('subprocess')
+  const sandbox = ctx.get('sandbox')
+  const sandboxPolicy = ctx.get('sandboxPolicy')
+  if (subprocess === undefined) throw new Error('Core subprocess capability is unavailable')
+  if (sandbox === undefined || sandboxPolicy === undefined) throw new Error('workspace-write sandbox capability is unavailable')
+
+  const workspace = request.workspace
+  const sessionCwd = request.session.header.cwd
+  if (sessionCwd === undefined) throw new Error('session has no canonical cwd')
+  let canonicalSession: string
+  try {
+    canonicalSession = realpathSync(sessionCwd)
+    if (!statSync(join(canonicalSession, '.probhub', 'workspace.yaml')).isFile()) throw new Error('workspace schema missing')
+  } catch {
+    throw new Error('Workspace Schema v1 is required; migrate this old workspace first')
+  }
+  if (canonicalSession !== workspace) throw new Error('workspace identity changed; retry the validation job')
+  const temp = mkdtempSync(join(tmpdir(), 'dsh-probhub-job-'))
+  const cancelFile = join(temp, 'cancel')
+  const controller = new AbortController()
+  let handle: SubprocessHandle
+  let outputOffset = 0
+  let cancelRequested = false
+  let cancelError: string | undefined
+  try {
+    const coreScript = resolveCoreScript(config.command)
+    const commandArgv = [
+      process.execPath,
+      coreScript,
+      '--workspace', workspace,
+      '--json', request.operation,
+      request.problemId,
+      ...(request.args ?? []),
+    ]
+    // Validation jobs deliberately require the caller's already-authorized
+    // workspace-write mode. This adapter never upgrades a read-only session
+    // or bypasses the shared approval/permission flow.
+    const policy = sandboxPolicy.resolve({ session: request.session })
+    if (policy.mode !== 'workspace-write') {
+      throw new Error('ProbHub background validation requires workspace-write permission')
+    }
+    const confined = sandbox.confine(commandArgv, {
+      ...policy,
+      mode: 'workspace-write',
+      workspaceRoot: workspace,
+    })
+    handle = subprocess.spawn({
+      argv: confined.argv,
+      cwd: workspace,
+      env: { PROBHUB_CANCEL_FILE: cancelFile, PYTHONIOENCODING: 'utf-8' },
+      graceMs: 5_000,
+      signal: controller.signal,
+      stdio: {
+        stdin: 'ignore',
+        stdout: { maxBytes: config.maxOutputBytes },
+        stderr: { maxBytes: config.maxOutputBytes },
+      },
+    })
+  } catch (error) {
+    try { rmSync(temp, { recursive: true, force: false }) } catch { /* preserve the launch error */ }
+    throw error
+  }
+
+  const done = (async (): Promise<JobOutcome> => {
+    let outcome: JobOutcome
+    try {
+      const processOutcome = await handle.done
+      if (!(await handle.waitForExit())) {
+        outcome = { status: 'failed', detail: 'cleanup_failed' }
+      } else {
+        const stdout = handle.collected.stdout?.readFrom(0)
+        const stderr = handle.collected.stderr?.readFrom(0)
+        void stderr
+        const text = stdout?.text ?? ''
+        if (processOutcome.signal === null && processOutcome.exitCode !== null && stdout?.lossy !== true && text.length > 0) {
+          try {
+            const value = JSON.parse(text) as unknown
+            const detail = coreOutcomeDetail(value)
+            outcome = coreCancelled(value)
+              ? { status: 'killed', detail: 'cancelled', output: text }
+              : { status: 'completed', output: text, ...(detail === undefined ? {} : { detail }) }
+          } catch {
+            outcome = { status: 'failed', detail: 'core_failed' }
+          }
+        } else if (cancelRequested) {
+          outcome = { status: 'killed', detail: 'cancelled' }
+        } else if (cancelError !== undefined) {
+          outcome = { status: 'failed', detail: 'cancel_request_failed' }
+        } else if (processOutcome.signal !== null || processOutcome.exitCode === null) {
+          outcome = { status: 'failed', detail: 'core_process_terminated' }
+        } else {
+          outcome = { status: 'failed', detail: stdout?.lossy === true ? 'core_output_limit' : 'core_failed' }
+        }
+      }
+    } catch {
+      outcome = { status: cancelRequested ? 'killed' : 'failed', detail: cancelRequested ? 'cancelled' : 'core_failed' }
+    }
+    try {
+      rmSync(temp, { recursive: true, force: false })
+    } catch (error: unknown) {
+      if ((error as { code?: unknown }).code !== 'ENOENT') return { status: 'failed', detail: 'cleanup_failed' }
+    }
+    return outcome
+  })()
+
+  return {
+    cancel: () => {
+      if (cancelRequested) return
+      cancelRequested = true
+      try { writeFileSync(cancelFile, '1') } catch (error: unknown) { cancelError = String(error) }
+      try { handle.terminate() } catch (error: unknown) { cancelError = String(error) }
+      controller.abort()
+    },
+    done,
+    readOutput: () => {
+      const reader = handle.collected.stdout
+      if (reader === undefined) return ''
+      const read = reader.readFrom(outputOffset)
+      outputOffset = read.nextOffset
+      return read.lossy ? `${read.text}\n[output truncated]` : read.text
+    },
+  }
 }
 
 function summarizeProblems(status: unknown, lint: unknown): ProblemSummary[] {

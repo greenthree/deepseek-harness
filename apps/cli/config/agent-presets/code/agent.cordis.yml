@@ -80,6 +80,9 @@
 - id: tool-jobs
   name: '@deepseek-ai/dsh-tool-jobs'
 
+- id: tool-probhub
+  name: '@deepseek-ai/dsh-host-probhub/tools'
+
 # ── skills ──────────────────────────────────────────────────────────────────
 
 # The skill REGISTRY lives in the host composition and is layered per scope:

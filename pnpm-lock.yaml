@@ -192,6 +192,9 @@ importers:
       '@deepseek-ai/dsh-home-paths':
         specifier: workspace:^
         version: link:../../packages/util/home-paths
+      '@deepseek-ai/dsh-host-probhub':
+        specifier: workspace:^
+        version: link:../../packages/host/probhub
       '@deepseek-ai/dsh-jobs-local':
         specifier: workspace:^
         version: link:../../packages/jobs/jobs-local
@@ -5215,6 +5218,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
       '@deepseek-ai/dsh-brand':
         specifier: workspace:^
         version: link:../../util/brand
@@ -5224,6 +5230,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-jobs':
+        specifier: workspace:^
+        version: link:../../jobs/jobs
       '@deepseek-ai/dsh-sandbox':
         specifier: workspace:^
         version: link:../../sandbox/sandbox
@@ -5239,6 +5248,12 @@ importers:
       '@deepseek-ai/dsh-subprocess':
         specifier: workspace:^
         version: link:../../subprocess/subprocess
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: workspace:^
+        version: link:../../core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
 
   packages/host/webserver:
     dependencies:
@@ -8841,6 +8856,12 @@ importers:
       '@deepseek-ai/dsh-hooks-codex':
         specifier: workspace:^
         version: link:../../packages/hooks/hooks-codex
+      '@deepseek-ai/dsh-host-probhub':
+        specifier: workspace:^
+        version: link:../../packages/host/probhub
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: workspace:^
+        version: link:../../packages/host/webserver
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../packages/runtime-diagnostics/invariants

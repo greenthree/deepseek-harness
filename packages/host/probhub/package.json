@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-host-probhub",
-  "description": "Read-only ProbHub WebUI Host bridge for Schema v1 workspaces",
+  "description": "ProbHub WebUI Host bridge and background validation tools for Schema v1 workspaces",
   "version": "0.1.1-rc.2",
   "publishConfig": { "access": "public" },
   "repository": {
@@ -20,16 +20,25 @@
       "types": "./lib/types/invariant.d.ts",
       "default": "./lib/invariant.js"
     },
+    "./tools": {
+      "types": "./lib/types/tools.d.ts",
+      "default": "./lib/tools.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
+    "lib/tools.js",
     "lib/invariant.js",
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
   "peerDependencies": {
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-jobs": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-host-webserver": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
@@ -42,6 +51,10 @@
     "probhub": "0.7.0"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-jobs": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-host-webserver": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
