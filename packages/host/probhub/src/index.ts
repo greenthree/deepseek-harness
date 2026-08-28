@@ -243,7 +243,12 @@ async function resolveWorkspace(cwd: string | undefined): Promise<{ kind: 'ok'; 
   return { kind: 'ok', value: { cwd: canonical, workspaceId: createHash('sha256').update(canonical).digest('hex'), schemaVersion: 1 } }
 }
 
-/** Resolve and validate the canonical workspace belonging to one live Session. */
+/**
+ * Resolve and validate the canonical workspace belonging to one live Session.
+ * @param session - live Harness session whose immutable cwd identifies the workspace.
+ * @returns the canonical Schema v1 workspace identity and path.
+ * @throws when the session has no accessible Schema v1 workspace.
+ */
 export async function resolveWorkspaceForSession(session: Session): Promise<ResolvedWorkspace> {
   const result = await resolveWorkspace(session.header.cwd)
   if (result.kind === 'ok') return result.value
@@ -303,6 +308,9 @@ async function runCore(
   problems: readonly string[] = [],
   session?: Session,
 ): Promise<CoreResult> {
+  const command = config.command ?? 'probhub/bin/probhub.js'
+  const maxOutputBytes = config.maxOutputBytes ?? 1024 * 1024
+  const timeoutMs = config.timeoutMs ?? 15_000
   const subprocess: SubprocessRuntime | undefined = ctx.get('subprocess')
   if (subprocess === undefined) return { adapterOk: false, coreOk: false, value: null, error: 'core_unavailable' }
   const sandbox: SandboxProvider | undefined = ctx.get('sandbox')
@@ -310,7 +318,7 @@ async function runCore(
   if (sandbox === undefined || sandboxPolicy === undefined) return { adapterOk: false, coreOk: false, value: null, error: 'sandbox_unavailable' }
   let coreScript: string
   try {
-    coreScript = resolveCoreScript(config.command)
+    coreScript = resolveCoreScript(command)
   } catch {
     return { adapterOk: false, coreOk: false, value: null, error: 'core_unavailable' }
   }
@@ -339,11 +347,11 @@ async function runCore(
     const handle = subprocess.spawn({
       argv: confinedArgv,
       cwd,
-      graceMs: Math.min(config.timeoutMs, 5_000), signal: controller.signal,
+      graceMs: Math.min(timeoutMs, 5_000), signal: controller.signal,
       stdio: {
         stdin: 'ignore',
-        stdout: { maxBytes: config.maxOutputBytes },
-        stderr: { maxBytes: config.maxOutputBytes },
+        stdout: { maxBytes: maxOutputBytes },
+        stderr: { maxBytes: maxOutputBytes },
       },
     })
     const outcome = await handle.done
@@ -402,6 +410,11 @@ function coreCancelled(value: unknown): boolean {
  * Start one detached, workspace-write Core operation as a generic job producer.
  * The producer owns only the child process and its cancellation marker; Core
  * remains responsible for locks, snapshots, evidence and transactional writes.
+ * @param ctx - Harness context providing subprocess, sandbox, and policy services.
+ * @param config - executable path and bounded output settings.
+ * @param request - validated operation, canonical workspace, and session identity.
+ * @returns non-rejecting job hooks for the shared job registry.
+ * @throws when required services, workspace identity, permission, or process startup is unavailable.
  */
 export function createCoreJobHooks(
   ctx: Context,
