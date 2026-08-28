@@ -33,6 +33,7 @@ async function setup(
   mode: 'workspace-write' | 'read-only' = 'workspace-write',
   finishOnSpawn = false,
   waitForExitReject = false,
+  terminateReject = false,
 ) {
   const workspace = mkdtempSync(join(tmpdir(), 'dsh-probhub-tools-'))
   workspaces.push(workspace)
@@ -59,7 +60,10 @@ async function setup(
         argv: spec.argv,
         env: spec.env,
         done,
-        terminate: () => finish({ exitCode: null, signal: 'SIGTERM' }),
+        terminate: () => {
+          if (terminateReject) throw new Error('terminate failed')
+          finish({ exitCode: null, signal: 'SIGTERM' })
+        },
         waitForExit: async () => {
           if (waitForExitReject) throw new Error('tree probe failed')
           return true
@@ -167,6 +171,22 @@ describe('ProbHub background tools', () => {
     if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
     const id = (result.value as { jobId: string }).jobId as never
     await expect(ctx.jobs.wait(id, 1000, agent)).resolves.toMatchObject({ status: 'failed', detail: 'cleanup_failed' })
+  })
+
+  it('does not turn a failed cancellation request into a killed outcome', async () => {
+    const { ctx, agent, spawned } = await setup(undefined, 'workspace-write', false, false, true)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('cancel-request-failed'),
+      name: 'probhub_judge',
+      arguments: { problem_id: 'A01' },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    expect(ctx.jobs.kill(id, agent, 'user')).toBe('requested')
+    spawned[0]!.finish!({ exitCode: null, signal: 'SIGTERM' })
+    await expect(ctx.jobs.wait(id, 1000, agent)).resolves.toMatchObject({ status: 'failed', detail: 'cancel_request_failed' })
   })
 
   it('rejects invalid IDs and refuses a read-only session without starting a process', async () => {
