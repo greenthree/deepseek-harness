@@ -518,16 +518,27 @@ export function createCoreJobHooks(
     let outcome: JobOutcome
     try {
       const processOutcome = await handle.done
-      if (!(await handle.waitForExit())) {
+      let treeExited = false
+      let cleanupFailed = false
+      try {
+        treeExited = await handle.waitForExit()
+      } catch {
+        // A rejected tree-liveness probe is an infrastructure cleanup failure;
+        // it must not be reclassified as cancellation merely because a stop
+        // request raced with the probe.
+        cleanupFailed = true
+      }
+      if (cleanupFailed) {
+        // Keep cleanup failure as the highest-priority outcome.
+        outcome = { status: 'failed', detail: 'cleanup_failed' }
+      } else if (!treeExited) {
         outcome = { status: 'failed', detail: 'cleanup_failed' }
       } else {
         const stdout = handle.collected.stdout?.readFrom(0)
         const stderr = handle.collected.stderr?.readFrom(0)
         void stderr
         const text = stdout?.text ?? ''
-        if (cancelError !== undefined) {
-          outcome = { status: 'failed', detail: 'cancel_request_failed' }
-        } else if (processOutcome.signal === null && processOutcome.exitCode === 0 && stdout?.lossy !== true && text.length > 0) {
+        if (processOutcome.signal === null && processOutcome.exitCode !== null && stdout?.lossy !== true && text.length > 0) {
           try {
             const value = JSON.parse(text) as unknown
             const detail = coreOutcomeDetail(value)
@@ -541,6 +552,8 @@ export function createCoreJobHooks(
           } catch {
             outcome = { status: 'failed', detail: 'core_failed' }
           }
+        } else if (cancelError !== undefined) {
+          outcome = { status: 'failed', detail: 'cancel_request_failed' }
         } else if (cancelRequested) {
           outcome = { status: 'killed', detail: 'cancelled' }
         } else if (processOutcome.signal !== null || processOutcome.exitCode === null) {

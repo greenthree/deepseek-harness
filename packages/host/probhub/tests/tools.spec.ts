@@ -32,6 +32,7 @@ async function setup(
   output = JSON.stringify({ ok: true, code: 'all_expectations_met' }),
   mode: 'workspace-write' | 'read-only' = 'workspace-write',
   finishOnSpawn = false,
+  waitForExitReject = false,
 ) {
   const workspace = mkdtempSync(join(tmpdir(), 'dsh-probhub-tools-'))
   workspaces.push(workspace)
@@ -59,7 +60,10 @@ async function setup(
         env: spec.env,
         done,
         terminate: () => finish({ exitCode: null, signal: 'SIGTERM' }),
-        waitForExit: async () => true,
+        waitForExit: async () => {
+          if (waitForExitReject) throw new Error('tree probe failed')
+          return true
+        },
         collected: { stdout: { readFrom: () => ({ text: output, nextOffset: Buffer.byteLength(output), lossy: false }) } },
         finish,
       } as unknown as Spawned
@@ -113,6 +117,26 @@ describe('ProbHub background tools', () => {
     expect(ctx.jobs.read(id, agent).text).toContain('judge_timeout')
   })
 
+  it('parses a structured Core business failure even when the CLI exits nonzero', async () => {
+    const { ctx, agent, spawned } = await setup(
+      JSON.stringify({ ok: false, status: 'counterexample', code: 'stress_failed' }),
+      'workspace-write',
+      true,
+    )
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('core-business-failed'),
+      name: 'probhub_stress',
+      arguments: { problem_id: 'A01' },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    spawned[0]!.finish!({ exitCode: 1, signal: null })
+    await expect(ctx.jobs.wait(id, 1000, agent)).resolves.toMatchObject({ status: 'failed', detail: 'stress_failed' })
+    expect(ctx.jobs.read(id, agent).text).toContain('stress_failed')
+  })
+
   it('gives cleanup failure precedence over a Core cancellation result', async () => {
     const { ctx, agent } = await setup(
       JSON.stringify({ ok: false, status: 'cancelled', code: 'process_cleanup_failed' }),
@@ -122,6 +146,20 @@ describe('ProbHub background tools', () => {
     const result = await ctx.tools.execute({
       signal: new AbortController().signal,
       callId: CallId('core-cleanup-failed'),
+      name: 'probhub_judge',
+      arguments: { problem_id: 'A01' },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    await expect(ctx.jobs.wait(id, 1000, agent)).resolves.toMatchObject({ status: 'failed', detail: 'cleanup_failed' })
+  })
+
+  it('maps a rejected tree cleanup probe to cleanup_failed', async () => {
+    const { ctx, agent } = await setup(undefined, 'workspace-write', true, true)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('tree-cleanup-rejected'),
       name: 'probhub_judge',
       arguments: { problem_id: 'A01' },
       agent,
