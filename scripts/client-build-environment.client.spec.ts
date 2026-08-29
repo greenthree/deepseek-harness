@@ -27,6 +27,8 @@ const dshBuildWorkflows = [
   'e2e.yml',
   'release.yml',
   'release-publish.yml',
+  'release-probhub.yml',
+  'release-probhub-publish.yml',
   'sandbox.yml',
 ]
 

@@ -1,0 +1,62 @@
+# Pack the standalone downstream ProbHub sequence. The Host bridge and profile
+# Bundle have their own version line and never enter the official dsh release.
+# This workflow has no credentials and runs on pull requests and master pushes;
+# publication is the explicit dispatch in release-probhub-publish.yml.
+name: Release (probhub)
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  pack:
+    name: Pack ProbHub tarballs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify ProbHub release version
+        run: pnpm run release:verify --family probhub
+
+      - name: Build Host artifacts
+        run: pnpm run build:lib:host
+
+      - name: Build ProbHub Bundle
+        run: pnpm --filter @deepseek-ai/dsh-probhub run bundle
+
+      - name: Pack ProbHub release tarballs
+        run: pnpm run release:pack --family probhub --out dist/npm-probhub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probhub-npm-tarballs
+          path: dist/npm-probhub/*
+          if-no-files-found: error
+          retention-days: 7

@@ -479,6 +479,41 @@ describe('npm release workflows', () => {
       expect(publish.concurrency).toMatchObject({ group: 'Release-publish' })
     }
   })
+
+  it('keeps the standalone ProbHub publication sequence isolated from dsh', () => {
+    const pack = loadWorkflow('.github/workflows/release-probhub.yml')
+    const publish = loadWorkflow('.github/workflows/release-probhub-publish.yml')
+    if (!isRecord(pack.jobs) || !isRecord(publish.jobs)) {
+      throw new TypeError('ProbHub release workflows must define jobs')
+    }
+    expect(Object.keys(pack.jobs)).toEqual(['pack'])
+    expect(Object.keys(publish.jobs).sort()).toEqual(['pack', 'publish'])
+    const packJob = pack.jobs.pack
+    const publishPack = publish.jobs.pack
+    const publishJob = publish.jobs.publish
+    if (!isRecord(packJob) || !isRecord(publishPack) || !isRecord(publishJob)
+      || !Array.isArray(packJob.steps) || !Array.isArray(publishPack.steps)
+      || !Array.isArray(publishJob.steps)) {
+      throw new TypeError('ProbHub release jobs must define steps')
+    }
+
+    expect(packJob.name).toBe('Pack ProbHub tarballs')
+    expect(publishPack.name).toBe('Pack ProbHub tarballs')
+    const packCommands = [...packJob.steps, ...publishPack.steps]
+      .filter(isRecord)
+      .map(step => step.run)
+      .filter((run): run is string => typeof run === 'string')
+    expect(packCommands).toContain('pnpm run release:verify --family probhub')
+    expect(packCommands).toContain('pnpm run release:pack --family probhub --out dist/npm-probhub')
+    expect(packCommands).toContain('pnpm --filter @deepseek-ai/dsh-probhub run bundle')
+    expect(publishJob.environment).toBe('npm-publish')
+    expect(publishJob.concurrency).toMatchObject({ group: 'Release-publish' })
+    const publishCommands = publishJob.steps
+      .filter(isRecord)
+      .map(step => step.run)
+      .filter((run): run is string => typeof run === 'string')
+    expect(publishCommands).toContain('pnpm run release:publish --family probhub --from dist/npm-probhub')
+  })
 })
 
 describe('Documentation site publication', () => {

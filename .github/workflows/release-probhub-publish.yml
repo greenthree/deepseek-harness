@@ -1,0 +1,93 @@
+# Publish the standalone downstream ProbHub sequence to npm. Publication is
+# manual-only and accepts only a probhub-v* tag; the pack job uploads exactly
+# the verified Host and Bundle tarballs produced from that tag.
+name: Release publish (probhub)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  pack:
+    name: Pack ProbHub tarballs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify ProbHub release version
+        env:
+          RELEASE_PUBLISH: 'true'
+        run: pnpm run release:verify --family probhub
+
+      - name: Build Host artifacts
+        run: pnpm run build:lib:host
+
+      - name: Build ProbHub Bundle
+        run: pnpm --filter @deepseek-ai/dsh-probhub run bundle
+
+      - name: Pack ProbHub release tarballs
+        run: pnpm run release:pack --family probhub --out dist/npm-probhub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probhub-npm-tarballs
+          path: dist/npm-probhub/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish ProbHub packages to npm
+    needs: pack
+    runs-on: ubuntu-24.04
+    environment: npm-publish
+    concurrency:
+      group: Release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Install (immutable, no package scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: probhub-npm-tarballs
+          path: dist/npm-probhub
+
+      - name: Publish ProbHub tarballs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm run release:publish --family probhub --from dist/npm-probhub
