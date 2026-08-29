@@ -35,13 +35,13 @@ export const Config: z<Config> = z.object({
   timeoutMs: z.natural().min(1).default(15_000),
 })
 
-/** Operations exposed by the background ProbHub validation producer. */
-export type CoreOperation = 'judge' | 'stress' | 'judge-qa' | 'mutation'
+/** Operations exposed by the background ProbHub Core producer. */
+export type CoreOperation = 'judge' | 'stress' | 'judge-qa' | 'mutation' | 'checkpoint' | 'seal' | 'assemble' | 'build'
 
 /** A validated Core operation request. Paths are always derived from Session cwd. */
 export interface CoreJobRequest {
   readonly operation: CoreOperation
-  readonly problemId: string
+  readonly problemId?: string
   readonly args?: readonly string[]
   readonly session: Session
   readonly workspace: string
@@ -256,8 +256,6 @@ export async function resolveWorkspaceForSession(session: Session): Promise<Reso
   throw new Error(result.error)
 }
 
-interface CoreResult { readonly adapterOk: boolean; readonly coreOk: boolean; readonly value: unknown; readonly error?: string }
-
 function migrationCode(value: unknown): string | undefined {
   return isRecord(value) && value.code === 'migration_required' ? 'migration_required' : undefined
 }
@@ -303,13 +301,32 @@ function safeText(value: unknown): string {
   return String(value).replace(/(?:[A-Za-z]:[\\/]|\/)(?:[^\s"']+)/g, '[path]').slice(0, 512)
 }
 
-async function runCore(
+/** Result of one bounded Core subprocess invocation. */
+export interface CoreResult {
+  readonly adapterOk: boolean
+  readonly coreOk: boolean
+  readonly value: unknown
+  readonly error?: string
+}
+
+/**
+ * Run a read-only Core operation with the shared subprocess and sandbox services.
+ * @param ctx - Harness context providing subprocess, sandbox, and policy services.
+ * @param config - executable path, output cap, and optional timeout.
+ * @param cwd - canonical Schema v1 workspace path.
+ * @param operation - Core CLI operation to run.
+ * @param problems - operation arguments derived from validated workspace inputs.
+ * @param session - optional Session used to resolve the read-only policy.
+ * @returns bounded transport and Core result details.
+ */
+export async function runCore(
   ctx: Context,
   config: Config,
   cwd: string,
   operation: string,
   problems: readonly string[] = [],
   session?: Session,
+  signal?: AbortSignal,
 ): Promise<CoreResult> {
   const command = config.command ?? 'probhub/bin/probhub.js'
   const maxOutputBytes = config.maxOutputBytes ?? 1024 * 1024
@@ -345,7 +362,11 @@ async function runCore(
     return { adapterOk: false, coreOk: false, value: null, error: 'sandbox_unavailable' }
   }
   const controller = new AbortController()
-  const timer = setTimeout(() => { controller.abort() }, config.timeoutMs)
+  let abortReason: 'caller' | 'timeout' | undefined
+  if (signal?.aborted === true) return { adapterOk: false, coreOk: false, value: null, error: 'core_cancelled' }
+  const abortFromCaller = (): void => { abortReason = 'caller'; controller.abort() }
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timer = setTimeout(() => { abortReason = 'timeout'; controller.abort() }, timeoutMs)
   try {
     const handle = subprocess.spawn({
       argv: confinedArgv,
@@ -363,7 +384,7 @@ async function runCore(
     } catch {
       return { adapterOk: false, coreOk: false, value: null, error: 'cleanup_failed' }
     }
-    if (controller.signal.aborted) return { adapterOk: false, coreOk: false, value: null, error: 'core_timeout' }
+    if (abortReason !== undefined) return { adapterOk: false, coreOk: false, value: null, error: abortReason === 'caller' ? 'core_cancelled' : 'core_timeout' }
     if (outcome.signal !== null || outcome.exitCode === null) {
       return { adapterOk: false, coreOk: false, value: null, error: 'core_failed' }
     }
@@ -380,9 +401,10 @@ async function runCore(
     // succeeded and `value.ok` alone carries the Core result.
     return { adapterOk: true, coreOk: value.ok, value }
   } catch {
-    return { adapterOk: false, coreOk: false, value: null, error: controller.signal.aborted ? 'core_timeout' : 'core_unavailable' }
+    return { adapterOk: false, coreOk: false, value: null, error: abortReason === 'caller' ? 'core_cancelled' : abortReason === 'timeout' ? 'core_timeout' : 'core_unavailable' }
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', abortFromCaller)
   }
 }
 
@@ -469,9 +491,9 @@ function safeMarker(value: unknown): string | undefined {
 }
 
 /** Project a Core result before exposing it through a Harness job. */
-function projectJobOutput(value: unknown): string {
+function projectJobOutput(value: unknown, operation: CoreOperation): string {
   if (!isRecord(value)) return JSON.stringify({ ok: false })
-  const projected: Record<string, unknown> = { ok: value.ok === true }
+  const projected: Record<string, unknown> = { ok: value.ok === true, operation }
   for (const key of ['code', 'status', 'reason', 'stop_code'] as const) {
     const marker = safeMarker(value[key])
     if (marker !== undefined) projected[key] = marker
@@ -480,8 +502,83 @@ function projectJobOutput(value: unknown): string {
   for (const key of ['problems', 'errorCount', 'warningCount'] as const) {
     if (result[key] !== undefined) projected[key] = result[key]
   }
+  if (operation === 'checkpoint' || operation === 'seal') {
+    const checkpoint = projectCheckpoint(value.checkpoint)
+    if (checkpoint !== undefined) projected.checkpoint = checkpoint
+  }
+  if (operation === 'seal' || operation === 'assemble') {
+    const generation = projectGeneration(value.generation ?? (operation === 'assemble' ? value : undefined))
+    if (generation !== undefined) projected.generation = generation
+  }
+  if (operation === 'build') {
+    const batchId = safeMarker(value.batch_id)
+    if (batchId !== undefined) projected.batch_id = batchId
+    const packages = projectProblemMap(value.packages, true)
+    const judge = projectProblemMap(value.judge, false)
+    if (packages !== undefined) projected.packages = packages
+    if (judge !== undefined) projected.judge = judge
+  }
   return JSON.stringify(projected)
 }
+
+function projectCheckpoint(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined
+  const result: Record<string, unknown> = {}
+  for (const key of ['problem_id', 'revision_id', 'state', 'source_hash', 'data_hash'] as const) {
+    const marker = safeMarker(value[key])
+    if (marker !== undefined) result[key] = marker
+  }
+  return Object.keys(result).length === 0 ? undefined : result
+}
+
+function projectGeneration(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined
+  const result: Record<string, unknown> = {}
+  for (const key of ['generation_id', 'state'] as const) {
+    const marker = safeMarker(value[key])
+    if (marker !== undefined) result[key] = marker
+  }
+  for (const key of ['complete', 'all_sealed'] as const) {
+    if (typeof value[key] === 'boolean') result[key] = value[key]
+  }
+  if (Array.isArray(value.missing)) {
+    result.missing = value.missing.slice(0, 256).flatMap((item: unknown) => {
+      if (!isRecord(item)) return []
+      const row: Record<string, string> = {}
+      const problemId = safeMarker(item.problem_id)
+      const reason = safeText(item.reason)
+      if (problemId !== undefined) row.problem_id = problemId
+      row.reason = reason
+      return Object.keys(row).length === 0 ? [] : [row]
+    })
+  }
+  return Object.keys(result).length === 0 ? undefined : result
+}
+
+function projectProblemMap(value: unknown, includeVerification: boolean): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined
+  const result: Record<string, unknown> = {}
+  for (const [id, raw] of Object.entries(value).slice(0, 256)) {
+    if (!PROBLEM_ID_MARKER.test(id) || !isRecord(raw)) continue
+    const row: Record<string, unknown> = {}
+    if (typeof raw.ok === 'boolean') row.ok = raw.ok
+    if (typeof raw.status === 'string') row.status = safeMarker(raw.status)
+    if (includeVerification && isRecord(raw.verification)) {
+      const verification: Record<string, unknown> = {}
+      if (typeof raw.verification.ok === 'boolean') verification.ok = raw.verification.ok
+      if (typeof raw.verification.errorCount === 'number') verification.errorCount = Math.min(Math.max(0, raw.verification.errorCount), 256)
+      if (typeof raw.verification.warningCount === 'number') verification.warningCount = Math.min(Math.max(0, raw.verification.warningCount), 256)
+      if (Object.keys(verification).length > 0) row.verification = verification
+    }
+    const final = isRecord(raw.final) ? raw.final : undefined
+    const finalCode = safeMarker(final?.code) ?? safeMarker(final?.status)
+    if (finalCode !== undefined) row.detail = finalCode
+    if (Object.keys(row).length > 0) result[id] = row
+  }
+  return Object.keys(result).length === 0 ? undefined : result
+}
+
+const PROBLEM_ID_MARKER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
 /**
  * Start one detached, workspace-write Core operation as a generic job producer.
@@ -531,7 +628,7 @@ export function createCoreJobHooks(
       coreScript,
       '--workspace', workspace,
       '--json', request.operation,
-      request.problemId,
+      ...(request.problemId === undefined ? [] : [request.problemId]),
       ...(request.args ?? []),
     ]
     // Validation jobs deliberately require the caller's already-authorized
@@ -590,7 +687,7 @@ export function createCoreJobHooks(
         if (processOutcome.signal === null && processOutcome.exitCode !== null && stdout?.lossy !== true && text.length > 0) {
           try {
             const value = JSON.parse(text) as unknown
-            safeOutput = projectJobOutput(value)
+            safeOutput = projectJobOutput(value, request.operation)
             const detail = coreOutcomeDetail(value)
             outcome = coreCleanupFailed(value)
               ? { status: 'failed', detail: 'cleanup_failed', output: safeOutput }

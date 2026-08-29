@@ -529,13 +529,13 @@ const TOOL_PACKAGES: ToolPackage[] = [
     dir: 'host-probhub',
     source: 'packages/host/probhub/src/tools.ts',
     requires: ['ctx.tools', 'ctx.jobs', 'ctx.systemPrompt', 'ProbHub Core subprocess/sandbox services at execution time'],
-    writes: ['tool/call', 'ctx.jobs background record', 'ProbHub Core caches/evidence/stress diagnostics at execution time', 'tool/result'],
+    writes: ['tool/call', 'ctx.jobs background record', 'ProbHub Core caches/evidence/checkpoints/generations/formal artifacts at execution time', 'tool/result'],
     async mount(ctx) {
       await ctx.plugin(LocalJobRegistry)
       await ctx.plugin(ToolProbhub)
     },
     note:
-      'Optional host subpath consumer for Schema v1 ProbHub validation. It contributes four background tools — probhub_judge, probhub_stress, probhub_judge_qa, and probhub_mutation — that derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids. Collect or stop them with the job tools; arbitrary paths, --against, --fixate, and generated-artifact paths are not accepted.',
+      'Optional host subpath consumer for Schema v1 ProbHub validation and delivery. Background writers (probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation, probhub_checkpoint, probhub_seal, probhub_assemble, and probhub_build) derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids; probhub_assemble may create a draft checkpoint when one is missing; probhub_build additionally requires confirm: true and the normal approval seam because it publishes formal PDF, ZIP, metadata, and Manifest artifacts. Read-only probhub_generation_status, probhub_report, and probhub_verify_package return bounded projections; verify-package derives and validates the canonical workspace ZIP and accepts no arbitrary path. Collect or stop background jobs with the job tools; arbitrary paths, --against, and --fixate are not accepted.',
   },
   {
     pkg: '@deepseek-ai/dsh-experimental-tool-agent-team',

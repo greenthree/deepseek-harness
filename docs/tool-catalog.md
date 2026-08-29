@@ -37,7 +37,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`, `list_agents`, `send_message` | `ctx.tools`, `ctx.subagents`, `ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`, `tool/result`, `child session events through ctx.subagents` | - | The globally named control tools over continuable background subagents: provider-bound `tool-subagent` instances register distinct delegation tools, while this package registers `send_message` and `interrupt_agent` once, plus `list_agents` from its separately loaded `/list-agents` plugin (whose catalog rows use the sessionProjections and live Agent registries). |
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`, `ctx.systemPrompt`, `a live continuable in-process child Agent` | `tool/call`, `tool/result`, `a user-role message in the direct parent session` | - | Registered per continuable in-process child rather than globally, so this schema is visible only inside such a child and survives its global `toolFilter`. The same contribution installs the child-scoped `tool:report` prompt section, which this catalog does not render. The parent-facing `send_message` tool is installed independently. |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`, `job_list`, `job_output` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt` | `tool/call`, `tool/result`, `user/message via agent.inject() for background completion notices` | - | The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`. |
-| `@deepseek-ai/dsh-host-probhub/tools` | `probhub_judge`, `probhub_judge_qa`, `probhub_mutation`, `probhub_stress` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt`, `ProbHub Core subprocess/sandbox services at execution time` | `tool/call`, `ctx.jobs background record`, `ProbHub Core caches/evidence/stress diagnostics at execution time`, `tool/result` | - | Optional host subpath consumer for Schema v1 ProbHub validation. It contributes four background tools — probhub_judge, probhub_stress, probhub_judge_qa, and probhub_mutation — that derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids. Collect or stop them with the job tools; arbitrary paths, --against, --fixate, and generated-artifact paths are not accepted. |
+| `@deepseek-ai/dsh-host-probhub/tools` | `probhub_assemble`, `probhub_build`, `probhub_checkpoint`, `probhub_generation_status`, `probhub_judge`, `probhub_judge_qa`, `probhub_mutation`, `probhub_report`, `probhub_seal`, `probhub_stress`, `probhub_verify_package` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt`, `ProbHub Core subprocess/sandbox services at execution time` | `tool/call`, `ctx.jobs background record`, `ProbHub Core caches/evidence/checkpoints/generations/formal artifacts at execution time`, `tool/result` | - | Optional host subpath consumer for Schema v1 ProbHub validation and delivery. Background writers (probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation, probhub_checkpoint, probhub_seal, probhub_assemble, and probhub_build) derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids; probhub_assemble may create a draft checkpoint when one is missing; probhub_build additionally requires confirm: true and the normal approval seam because it publishes formal PDF, ZIP, metadata, and Manifest artifacts. Read-only probhub_generation_status, probhub_report, and probhub_verify_package return bounded projections; verify-package derives and validates the canonical workspace ZIP and accepts no arbitrary path. Collect or stop background jobs with the job tools; arbitrary paths, --against, and --fixate are not accepted. |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
@@ -1713,6 +1713,84 @@ The kind-agnostic background-job controller: background bash commands, PTY sends
 
 ## `@deepseek-ai/dsh-host-probhub/tools`
 
+### `probhub_assemble`
+
+Assemble the current ProbHub checkpoint generation in the background. It reads immutable checkpoints and writes only Core-managed preview generation data.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_build`
+
+Build one Schema v1 problem package in the background after Core verifies the collection sealed revisions. Formal build and publication remain owned by ProbHub Core.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    },
+    "confirm": {
+      "type": "boolean",
+      "description": "Required explicit confirmation that formal PDF/ZIP/metadata publication is intended.",
+      "const": true
+    },
+    "no_cache": {
+      "type": "boolean",
+      "description": "Ignore existing Judge caches for this build."
+    }
+  },
+  "required": [
+    "problem_id",
+    "confirm"
+  ]
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_checkpoint`
+
+Create a ProbHub draft checkpoint for one Schema v1 problem in the background. The job writes only Core-managed checkpoint data under the current workspace.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_generation_status`
+
+Read the current ProbHub preview generation status for the current Session workspace. This operation is read-only and does not create or publish artifacts.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
 ### `probhub_judge`
 
 Run ProbHub local Judge for one Schema v1 problem in the background. The job uses workspace-write because Core may update caches and calibration evidence.
@@ -1788,6 +1866,57 @@ Run bounded ProbHub mutation testing for one Schema v1 problem in the background
 
 Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
 
+### `probhub_report`
+
+Read a bounded ProbHub workspace report, optionally scoped to one Schema v1 problem. This operation is read-only.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Optional Schema v1 problem id from the current workspace."
+    }
+  }
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_seal`
+
+Validate and seal one Schema v1 problem in the background, then assemble its current preview generation. The job uses workspace-write and never publishes formal PDF or ZIP artifacts.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    },
+    "rounds": {
+      "type": "number",
+      "description": "Optional positive stress round count."
+    },
+    "seed": {
+      "type": "number",
+      "description": "Optional deterministic stress master seed."
+    },
+    "no_cache": {
+      "type": "boolean",
+      "description": "Ignore existing Core caches for this seal."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
 ### `probhub_stress`
 
 Run ProbHub accepted-vs-brute stress testing for one Schema v1 problem in the background. Against/fixate and arbitrary paths are intentionally unavailable.
@@ -1817,7 +1946,28 @@ Run ProbHub accepted-vs-brute stress testing for one Schema v1 problem in the ba
 
 Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
 
-Optional host subpath consumer for Schema v1 ProbHub validation. It contributes four background tools — probhub_judge, probhub_stress, probhub_judge_qa, and probhub_mutation — that derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids. Collect or stop them with the job tools; arbitrary paths, --against, --fixate, and generated-artifact paths are not accepted.
+### `probhub_verify_package`
+
+Verify the generated ZIP for one Schema v1 problem using the canonical workspace path. The tool derives the ZIP path and never accepts an arbitrary path.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id whose generated ZIP should be verified."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+Optional host subpath consumer for Schema v1 ProbHub validation and delivery. Background writers (probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation, probhub_checkpoint, probhub_seal, probhub_assemble, and probhub_build) derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids; probhub_assemble may create a draft checkpoint when one is missing; probhub_build additionally requires confirm: true and the normal approval seam because it publishes formal PDF, ZIP, metadata, and Manifest artifacts. Read-only probhub_generation_status, probhub_report, and probhub_verify_package return bounded projections; verify-package derives and validates the canonical workspace ZIP and accepts no arbitrary path. Collect or stop background jobs with the job tools; arbitrary paths, --against, and --fixate are not accepted.
 
 <a id="deepseek-aidsh-experimental-tool-agent-team"></a>
 
