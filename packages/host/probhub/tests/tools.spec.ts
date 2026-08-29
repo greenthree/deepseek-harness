@@ -72,7 +72,7 @@ async function setup(
         finish,
       } as unknown as Spawned
       spawned.push(handle)
-      if (finishOnSpawn) queueMicrotask(() => finish({ exitCode: 0, signal: null }))
+      if (finishOnSpawn) queueMicrotask(() => { finish({ exitCode: 0, signal: null }) })
       return handle
     },
   } as never)

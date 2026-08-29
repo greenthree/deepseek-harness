@@ -53,7 +53,7 @@ function mountShell({ collapsed = false, width = 300 }: { collapsed?: boolean; w
           return <div data-testid="footer-action-seat" data-wide={owner.wide} />
         }
         if (key === 'sidebar.probhub') {
-          probHubOwner = owner as SidebarProbHubOwnerProps
+          probHubOwner = owner
           return <div data-testid="probhub-seat" data-wide={owner.wide} />
         }
         regionOwner = owner as SidebarSectionOwnerProps

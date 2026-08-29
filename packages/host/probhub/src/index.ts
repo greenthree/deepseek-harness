@@ -95,9 +95,9 @@ interface SessionRef {
 /** Registers the `/probhub` read-only route family. */
 export function apply(ctx: Context, config: Config = {}): void {
   const resolved: Config = {
-    command: config?.command ?? 'probhub/bin/probhub.js',
-    maxOutputBytes: config?.maxOutputBytes ?? 1024 * 1024,
-    timeoutMs: config?.timeoutMs ?? 15_000,
+    command: config.command ?? 'probhub/bin/probhub.js',
+    maxOutputBytes: config.maxOutputBytes ?? 1024 * 1024,
+    timeoutMs: config.timeoutMs ?? 15_000,
   }
   const route: WebRoute = {
     kind: 'prefix',
@@ -272,6 +272,9 @@ function projectCore(value: unknown): Record<string, unknown> {
       const row: Record<string, unknown> = { id }
       if (typeof item.state === 'string') row.state = item.state
       if (typeof item.ok === 'boolean') row.lintOk = item.ok
+      const final = isRecord(item.final) ? item.final : undefined
+      const finalCode = safeMarker(final?.code) ?? safeMarker(final?.status)
+      if (finalCode !== undefined) row.detail = finalCode
       if (Array.isArray(item.diagnostics)) row.diagnostics = projectDiagnostics(item.diagnostics)
       problems[id] = row
     }
@@ -403,37 +406,81 @@ function coreOutcomeDetail(value: unknown): string | undefined {
 }
 
 function coreCancelled(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(coreCancelled)
   if (!isRecord(value)) return false
-  if (value.code === 'cancelled' || value.status === 'cancelled') return true
-  return Object.values(value).some(coreCancelled)
+  if (value.code === 'cancelled' || value.status === 'cancelled' || value.reason === 'cancelled') return true
+  for (const key of ['final', 'execution'] as const) {
+    const nested = value[key]
+    if (isRecord(nested) && (nested.code === 'cancelled' || nested.status === 'cancelled' || nested.reason === 'cancelled')) return true
+  }
+  if (isRecord(value.problems)) {
+    return Object.values(value.problems).some(item => coreCancelled(item))
+  }
+  return false
 }
 
 function coreCleanupFailed(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(coreCleanupFailed)
   if (!isRecord(value)) return false
-  const code = typeof value.code === 'string' ? value.code : undefined
-  const status = typeof value.status === 'string' ? value.status : undefined
-  if (code?.includes('cleanup_failed') === true || status?.includes('cleanup_failed') === true) return true
-  return Object.values(value).some(coreCleanupFailed)
+  const hasMarker = (record: Record<string, unknown>): boolean => {
+    const code = typeof record.code === 'string' ? record.code : undefined
+    const status = typeof record.status === 'string' ? record.status : undefined
+    return code?.includes('cleanup_failed') === true || status?.includes('cleanup_failed') === true
+  }
+  if (hasMarker(value)) return true
+  for (const key of ['final', 'execution', 'cleanup'] as const) {
+    const nested = value[key]
+    if (isRecord(nested) && hasMarker(nested)) return true
+  }
+  if (isRecord(value.problems)) {
+    return Object.values(value.problems).some(item => coreCleanupFailed(item))
+  }
+  return false
 }
 
 function coreFailureDetail(value: unknown): string | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
+  if (!isRecord(value)) return undefined
+  const detailOf = (record: Record<string, unknown>): string | undefined => {
+    if (typeof record.code === 'string') return record.code
+    if (typeof record.status === 'string' && !['passed', 'completed'].includes(record.status)) return record.status
+    if (typeof record.reason === 'string') return record.reason
+    return undefined
+  }
+  const direct = detailOf(value)
+  if (direct !== undefined) return direct
+  for (const key of ['final', 'execution', 'cleanup'] as const) {
+    const nested = value[key]
+    if (isRecord(nested)) {
+      const detail = detailOf(nested)
+      if (detail !== undefined) return detail
+    }
+  }
+  if (isRecord(value.problems)) {
+    for (const item of Object.values(value.problems)) {
       const detail = coreFailureDetail(item)
       if (detail !== undefined) return detail
     }
-    return undefined
-  }
-  if (!isRecord(value)) return undefined
-  if (typeof value.code === 'string') return value.code
-  if (typeof value.status === 'string' && value.status !== 'passed') return value.status
-  for (const item of Object.values(value)) {
-    const detail = coreFailureDetail(item)
-    if (detail !== undefined) return detail
   }
   return undefined
+}
+
+/** Keep only short machine status markers in model-visible job output. */
+function safeMarker(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) return undefined
+  return value
+}
+
+/** Project a Core result before exposing it through a Harness job. */
+function projectJobOutput(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify({ ok: false })
+  const projected: Record<string, unknown> = { ok: value.ok === true }
+  for (const key of ['code', 'status', 'reason', 'stop_code'] as const) {
+    const marker = safeMarker(value[key])
+    if (marker !== undefined) projected[key] = marker
+  }
+  const result = projectCore(value)
+  for (const key of ['problems', 'errorCount', 'warningCount'] as const) {
+    if (result[key] !== undefined) projected[key] = result[key]
+  }
+  return JSON.stringify(projected)
 }
 
 /**
@@ -472,9 +519,11 @@ export function createCoreJobHooks(
   const cancelFile = join(temp, 'cancel')
   const controller = new AbortController()
   let handle: SubprocessHandle
-  let outputOffset = 0
+  let safeOutput = ''
+  let outputRead = false
   let cancelRequested = false
   let cancelError: string | undefined
+  const wasCancelled = (): boolean => cancelRequested
   try {
     const coreScript = resolveCoreScript(config.command)
     const commandArgv = [
@@ -541,20 +590,21 @@ export function createCoreJobHooks(
         if (processOutcome.signal === null && processOutcome.exitCode !== null && stdout?.lossy !== true && text.length > 0) {
           try {
             const value = JSON.parse(text) as unknown
+            safeOutput = projectJobOutput(value)
             const detail = coreOutcomeDetail(value)
             outcome = coreCleanupFailed(value)
-              ? { status: 'failed', detail: 'cleanup_failed', output: text }
+              ? { status: 'failed', detail: 'cleanup_failed', output: safeOutput }
               : coreCancelled(value)
-                ? { status: 'killed', detail: 'cancelled', output: text }
+                ? { status: 'killed', detail: 'cancelled', output: safeOutput }
                 : isRecord(value) && value.ok === true
-                  ? { status: 'completed', output: text, ...(detail === undefined ? {} : { detail }) }
-                  : { status: 'failed', detail: coreFailureDetail(value) ?? 'core_failed', output: text }
+                  ? { status: 'completed', output: safeOutput, ...(detail === undefined ? {} : { detail }) }
+                  : { status: 'failed', detail: coreFailureDetail(value) ?? 'core_failed', output: safeOutput }
           } catch {
             outcome = { status: 'failed', detail: 'core_failed' }
           }
         } else if (cancelError !== undefined) {
           outcome = { status: 'failed', detail: 'cancel_request_failed' }
-        } else if (cancelRequested) {
+        } else if (wasCancelled()) {
           outcome = { status: 'killed', detail: 'cancelled' }
         } else if (processOutcome.signal !== null || processOutcome.exitCode === null) {
           outcome = { status: 'failed', detail: 'core_process_terminated' }
@@ -583,11 +633,9 @@ export function createCoreJobHooks(
     },
     done,
     readOutput: () => {
-      const reader = handle.collected.stdout
-      if (reader === undefined) return ''
-      const read = reader.readFrom(outputOffset)
-      outputOffset = read.nextOffset
-      return read.lossy ? `${read.text}\n[output truncated]` : read.text
+      if (outputRead || safeOutput.length === 0) return ''
+      outputRead = true
+      return safeOutput
     },
   }
 }

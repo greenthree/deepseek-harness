@@ -7,9 +7,9 @@
 
 已发布插件向 `ctx.tools` 提供的所有面向模型的工具：模型通过系统提示词组装获得的 `name`、`description` 和 JSON Schema `parameters`。本目录是[子系统页面](subsystems/core.zh.md)（类型及每页生成的 `cordis-surface` 接线区域）的补充；本页列出的是向 agent（智能体）提供的*工具*。
 
-英文源文件由系统**生成**，并通过 `pnpm run verify-tool-catalog`（`doc-sync`（文档同步门禁）的一部分）验证新鲜度；本中文文件作为经评审对侧通过双语配对维护。与 Cordis 目录（纯源码 AST 处理）不同，英文生成器会在真实上下文中**启动**每个工具插件并读取 `ctx.tools.schemas()`，因为工具 schema 无法通过静态分析完全确定，例如运行时展开的枚举、拼接的描述、由配置决定的名称以及使用原始 JSON Schema 的 MCP 工具。完整性守卫会 glob 匹配 `packages/*/tool-*`；如果生成器的启动 manifest（元数据清单）遗漏任何包，检查就会失败，因此新工具不会在无人察觉的情况下缺少文档。参见[工具 schema 目录 Agent Note](../.agents/notes/implemented/process/2026-07-02-tool-schema-catalog.zh.md)。
+英文源文件由系统**生成**，并通过 `pnpm run verify-tool-catalog`（`doc-sync`（文档同步门禁）的一部分）验证新鲜度；本中文文件作为经评审对侧通过双语配对维护。与 Cordis 目录（纯源码 AST 处理）不同，英文生成器会在真实上下文中**启动**每个工具插件并读取 `ctx.tools.schemas()`，因为工具 schema 无法通过静态分析完全确定，例如运行时展开的枚举、拼接的描述、由配置决定的名称以及使用原始 JSON Schema 的 MCP 工具。完整性守卫会匹配 `packages/*/tool-*` 以及明确登记的 Host Consumer；如果生成器的启动 manifest（元数据清单）遗漏任何包，检查就会失败，因此新工具不会在无人察觉的情况下缺少文档。参见[工具 schema 目录 Agent Note](../.agents/notes/implemented/process/2026-07-02-tool-schema-catalog.zh.md)。
 
-范围：`packages/*/tool-*` 下已发布的产品工具，每个工具均使用其**默认**配置启动；但如果某个 Config 字段是**必填项**且没有默认值，生成器就必须作出选择，对应包的说明会记录本页展示的是哪个分支。注册的工具**名称**可以是加载时配置，例如 `tool-subagent` 的 `toolName`，因此部署可能以不同名称或额外名称提供某个包；如果存在随产品发布的别名，对应包的说明会予以记录。`examples/` 中的演示工具（例如 `echo`）不在范围内，这与 Cordis 目录仅涵盖包的范围一致。
+范围：`packages/*/tool-*` 下已发布的产品工具，以及明确登记的 Host Consumer，每个工具均使用其**默认**配置启动；但如果某个 Config 字段是**必填项**且没有默认值，生成器就必须作出选择，对应包的说明会记录本页展示的是哪个分支。注册的工具**名称**可以是加载时配置，例如 `tool-subagent` 的 `toolName`，因此部署可能以不同名称或额外名称提供某个包；如果存在随产品发布的别名，对应包的说明会予以记录。`examples/` 中的演示工具（例如 `echo`）不在范围内。
 
 <a id="tool-package-map"></a>
 
@@ -41,6 +41,7 @@
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`、`list_agents`、`send_message` | `ctx.tools`、`ctx.subagents`、`ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`、`tool/result`、`child session events through ctx.subagents` | - | 这些是控制可继续后台 subagent 的全局命名工具：绑定提供方的 `tool-subagent` 实例注册不同的委派工具；本包注册一次 `send_message` 和 `interrupt_agent`，另由 `list_agents` 通过单独加载的 `/list-agents` 插件提供，其目录行使用 sessionProjections 和实时 Agent 注册表。 |
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`、`ctx.systemPrompt`、`a live continuable in-process child Agent` | `tool/call`、`tool/result`、`a user-role message in the direct parent session` | - | 按可继续的进程内子级注册，而非全局注册，因此该 schema 仅在这种子级内部可见，并且不受其全局 `toolFilter` 影响。同一份贡献还会安装子级作用域的 `tool:report` 系统提示词 section，本目录不渲染该 section。面向父级的 `send_message` 工具单独安装。 |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`、`job_list`、`job_output` | `ctx.tools`、`ctx.jobs`、`ctx.systemPrompt` | `tool/call`、`tool/result`、`user/message via agent.inject() for background completion notices` | - | 与任务种类无关的后台任务控制器：后台 bash 命令、PTY 发送和 subagent 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。 |
+| `@deepseek-ai/dsh-host-probhub/tools` | `probhub_judge`、`probhub_judge_qa`、`probhub_mutation`、`probhub_stress` | `ctx.tools`、`ctx.jobs`、`ctx.systemPrompt`、执行时的 ProbHub Core subprocess/sandbox 服务 | `tool/call`、`ctx.jobs background record`、执行时的 ProbHub Core 缓存／evidence／stress 诊断、`tool/result` | - | Schema v1 ProbHub 验证的可选 Host 子路径 Consumer。它提供 4 个后台工具，从当前 Session 派生工作区，要求调用者已经获准使用 `workspace-write`，并返回通用 job id。使用 job 工具收集或停止任务；不接受任意路径、`--against`、`--fixate` 或生成物路径。 |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`、`interrupt_agent`、`list_agents`、`send_message`、`spawn_teammate`、`team_task_create`、`team_task_get`、`team_task_list`、`team_task_update`、`wait_agent` | `ctx.tools`、`ctx.systemPrompt`、`ctx.agentTeams`、`an exact live Team member Agent` | `tool/call`、`team/member`、`team/message/queued`、`team/message/delivered`、`team/task`、`tool/result` | - | 这 10 个工具限定于隐式 Team Lead 与持久 teammate 作用域。随产品发布的 dsh-base bundle 默认禁用该包；文档中的 Agent Teams profile patch 会启用它，并禁用旧 continuable child 的同名控制工具。 |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
@@ -1713,6 +1714,116 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 来源：[`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
 
 与任务种类无关的后台任务控制器：后台 bash 命令、PTY 发送和 subagent 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。
+
+<a id="deepseek-aidsh-host-probhubtools"></a>
+
+## `@deepseek-ai/dsh-host-probhub/tools`
+
+### `probhub_judge`
+
+在后台为一个 Schema v1 题目运行 ProbHub 本地 Judge。该任务使用 workspace-write，因为 Core 可能更新缓存和校准 evidence。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+来源：[`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_judge_qa`
+
+在后台为一个 Schema v1 题目运行 ProbHub Judge QA fixture。该任务使用 workspace-write，因为 Core 可能更新 QA evidence。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+来源：[`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_mutation`
+
+在后台为一个 Schema v1 题目运行有界 ProbHub mutation 测试。只接受安全的数值预算；不提供任意路径和运算符表达式。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    },
+    "max_mutants": {
+      "type": "number",
+      "description": "Optional maximum mutation candidates (1-256)."
+    },
+    "jobs": {
+      "type": "number",
+      "description": "Optional worker count (1 or 2)."
+    },
+    "timeout": {
+      "type": "number",
+      "description": "Optional total timeout in seconds (1-3600)."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+来源：[`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_stress`
+
+在后台为一个 Schema v1 题目运行 ProbHub accepted 与 brute 的 stress 测试。这里有意不提供 against/fixate 和任意路径。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Schema v1 problem id from the current workspace."
+    },
+    "rounds": {
+      "type": "number",
+      "description": "Optional positive stress round count."
+    },
+    "seed": {
+      "type": "number",
+      "description": "Optional deterministic stress master seed."
+    }
+  },
+  "required": [
+    "problem_id"
+  ]
+}
+```
+
+来源：[`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+可选的 Schema v1 ProbHub 验证 Host 子路径 Consumer。它提供 4 个后台工具：probhub_judge、probhub_stress、probhub_judge_qa 和 probhub_mutation。工具从当前 Session 派生工作区，要求调用者已经获准使用 workspace-write，并返回通用 job id。使用 job 工具收集或停止任务；不接受任意路径、--against、--fixate 或生成物路径。
 
 <a id="deepseek-aidsh-experimental-tool-agent-team"></a>
 

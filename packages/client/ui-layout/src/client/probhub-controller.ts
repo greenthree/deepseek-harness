@@ -65,8 +65,13 @@ const refresh = async (nextSession: string | undefined): Promise<void> => {
   emit()
 }
 
+/** Shared read-only controller projection used by the layout and sidebar seats. */
 export const probHubController = { getSnapshot, subscribe, select, refresh }
-export function useProbHub() {
+/**
+ * Subscribe the current component to the active ProbHub workspace snapshot.
+ * @returns the current controller projection for the active workspace.
+ */
+export function useProbHub(): ProbHubControllerState {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   return { ...current, select }
 }

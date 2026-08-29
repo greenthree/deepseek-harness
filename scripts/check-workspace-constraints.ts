@@ -141,6 +141,9 @@ function workspaceManifests(): WorkspaceManifest[] {
 }
 
 const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
+  // The optional model-facing validation consumer is exposed as a published
+  // subpath and bundled beside the host bridge entry.
+  '@deepseek-ai/dsh-host-probhub': ['lib/tools.js'],
   // Statically linked client libraries keep their stylesheets next to the emitted
   // JavaScript, which imports them by relative path: the compile shell runs
   // them through its own CSS pipeline, so the sheets are published artifacts.

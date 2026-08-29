@@ -10,7 +10,11 @@ export const name = 'host-probhub-invariant'
 /** Service required before the companion can register. */
 export const inject = ['invariants']
 
-/** Route registration/disposal is owned by the route carrier and covered by focused tests. */
+/**
+ * Route registration/disposal is owned by the route carrier and covered by
+ * focused tests. No runtime invariant: this companion only reserves the
+ * package-owned invariant seat so the host bridge can be composed uniformly.
+ */
 const install: InvariantInstaller = () => {}
 
 /** Register this package's invariant companion. */

@@ -44,6 +44,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * package's 'sidebar' entry; each action receives only the column state.
      */
     'sidebar.footer.action': { kind: 'list'; scope: 'root'; owner: SidebarFooterActionOwnerProps }
+    /**
+     * The lower sidebar seat for the ProbHub problem browser. A registrant registers
+     * one component under this name; the shell passes the current column width
+     * and the read-only ProbHub controller projection, so the component can
+     * render the problem list and health summary without owning sidebar geometry or
+     * workspace discovery. The shipped ui-sidebar component occupies this seat;
+     * a replacement shadows that UI, while no registration leaves the lower
+     * section absent and the rest of the sidebar unchanged.
+     */
     'sidebar.probhub': { kind: 'single'; scope: 'root'; owner: SidebarProbHubOwnerProps }
   }
 }

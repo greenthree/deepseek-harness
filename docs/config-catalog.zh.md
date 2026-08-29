@@ -857,6 +857,26 @@ export interface Config {
 
 来源：[`packages/host/frontend-static/src/index.ts:28`](../packages/host/frontend-static/src/index.ts)
 
+<a id="deepseek-aidsh-host-probhub"></a>
+
+## `@deepseek-ai/dsh-host-probhub`
+
+需要：`webServer`
+
+```ts config-catalog
+/** Core command configuration for the bridge. */
+export interface Config {
+  /** Node script path for the installed ProbHub Core CLI. */
+  command?: string
+  /** Maximum Core stdout/stderr bytes retained per request. */
+  maxOutputBytes?: number
+  /** Maximum time spent waiting for a read-only Core operation. */
+  timeoutMs?: number
+}
+```
+
+来源：[`packages/host/probhub/src/index.ts:23`](../packages/host/probhub/src/index.ts)
+
 <a id="deepseek-aidsh-host-webserver"></a>
 
 ## `@deepseek-ai/dsh-host-webserver`

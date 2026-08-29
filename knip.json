@@ -107,6 +107,11 @@
         "tests/**/*.{ts,tsx}"
       ]
     },
+    "packages/host/probhub": {
+      "ignoreDependencies": [
+        "probhub"
+      ]
+    },
     "packages/api/remotes": {
       "entry": [
         "tests/**/*.e2e.ts"

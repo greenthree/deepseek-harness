@@ -58,6 +58,13 @@ function present(title: string): GenericCallView {
   return { card: 'generic', title, kind: 'execute' }
 }
 
+function presentTitle(operation: string, args: unknown): GenericCallView {
+  const value = args !== null && typeof args === 'object' && 'problem_id' in args
+    ? (args as { problem_id?: unknown }).problem_id
+    : undefined
+  return present(`${operation} ${typeof value === 'string' ? value : ''}`)
+}
+
 function registerOperation(
   ctx: Context,
   operation: CoreOperation,
@@ -105,7 +112,7 @@ function registerOperation(
       })
       return { kind: 'background' as const, jobId: id }
     },
-    presentCall: args => present(`${operation} ${typeof args === 'object' && args !== null && 'problem_id' in args ? String((args as { problem_id: unknown }).problem_id) : ''}`),
+    presentCall: args => presentTitle(operation, args),
   }))
 }
 
