@@ -74,9 +74,6 @@
 - id: tool-jobs
   name: '@deepseek-ai/dsh-tool-jobs'
 
-- id: tool-probhub
-  name: '@deepseek-ai/dsh-host-probhub/tools'
-
 # ── goals ───────────────────────────────────────────────────────────────────
 
 # Only the model-facing tool. The goal SERVICE, its session driver, and the

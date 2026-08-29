@@ -192,9 +192,6 @@ importers:
       '@deepseek-ai/dsh-home-paths':
         specifier: workspace:^
         version: link:../../packages/util/home-paths
-      '@deepseek-ai/dsh-host-probhub':
-        specifier: workspace:^
-        version: link:../../packages/host/probhub
       '@deepseek-ai/dsh-jobs-local':
         specifier: workspace:^
         version: link:../../packages/jobs/jobs-local
@@ -1276,6 +1273,19 @@ importers:
         specifier: workspace:^
         version: link:../../core/session
 
+  packages/bundle/probhub:
+    dependencies:
+      '@deepseek-ai/dsh-host-probhub':
+        specifier: workspace:^
+        version: link:../../host/probhub
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+
   packages/bundle/web-app:
     dependencies:
       '@deepseek-ai/dsh-agent-presets':
@@ -1437,9 +1447,6 @@ importers:
       '@deepseek-ai/dsh-host-plugin-inventory':
         specifier: workspace:^
         version: link:../../host/plugin-inventory
-      '@deepseek-ai/dsh-host-probhub':
-        specifier: workspace:^
-        version: link:../../host/probhub
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../../host/webserver

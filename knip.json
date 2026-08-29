@@ -112,6 +112,11 @@
         "probhub"
       ]
     },
+    "packages/bundle/probhub": {
+      "ignoreDependencies": [
+        "@deepseek-ai/dsh-host-probhub"
+      ]
+    },
     "packages/api/remotes": {
       "entry": [
         "tests/**/*.e2e.ts"
