@@ -1728,15 +1728,18 @@ Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tool
 
 ### `probhub_build`
 
-Build one Schema v1 problem package in the background after Core verifies the collection sealed revisions. Formal build and publication remain owned by ProbHub Core.
+Build one or more Schema v1 problem packages as one collection batch after Core verifies sealed revisions. Formal build and publication remain owned by ProbHub Core.
 
 ```json
 {
   "type": "object",
   "properties": {
-    "problem_id": {
-      "type": "string",
-      "description": "Schema v1 problem id from the current workspace."
+    "problem_ids": {
+      "type": "array",
+      "description": "One to 256 distinct Schema v1 problem ids from the current workspace; Core builds them as one collection batch.",
+      "items": {
+        "type": "string"
+      }
     },
     "confirm": {
       "type": "boolean",
@@ -1749,7 +1752,7 @@ Build one Schema v1 problem package in the background after Core verifies the co
     }
   },
   "required": [
-    "problem_id",
+    "problem_ids",
     "confirm"
   ]
 }

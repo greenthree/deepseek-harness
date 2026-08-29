@@ -1734,15 +1734,18 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 
 ### `probhub_build`
 
-在 Core 验证整个题集的 sealed revision 后，于后台构建一个 Schema v1 题目包。正式构建和发布仍由 ProbHub Core 负责；调用必须提供 `confirm: true`，并通过标准 approval。
+在 Core 验证整个题集的 sealed revision 后，于后台将一个或多个 Schema v1 题目包作为同一批次构建。正式构建和发布仍由 ProbHub Core 负责；调用必须提供 `confirm: true`，并通过标准 approval。
 
 ```json
 {
   "type": "object",
   "properties": {
-    "problem_id": {
-      "type": "string",
-      "description": "Schema v1 problem id from the current workspace."
+    "problem_ids": {
+      "type": "array",
+      "description": "One to 256 distinct Schema v1 problem ids from the current workspace; Core builds them as one collection batch.",
+      "items": {
+        "type": "string"
+      }
     },
     "confirm": {
       "type": "boolean",
@@ -1755,7 +1758,7 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
     }
   },
   "required": [
-    "problem_id",
+    "problem_ids",
     "confirm"
   ]
 }

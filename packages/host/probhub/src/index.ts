@@ -42,6 +42,7 @@ export type CoreOperation = 'judge' | 'stress' | 'judge-qa' | 'mutation' | 'chec
 export interface CoreJobRequest {
   readonly operation: CoreOperation
   readonly problemId?: string
+  readonly problemIds?: readonly string[]
   readonly args?: readonly string[]
   readonly session: Session
   readonly workspace: string
@@ -628,7 +629,7 @@ export function createCoreJobHooks(
       coreScript,
       '--workspace', workspace,
       '--json', request.operation,
-      ...(request.problemId === undefined ? [] : [request.problemId]),
+      ...(request.problemIds ?? (request.problemId === undefined ? [] : [request.problemId])),
       ...(request.args ?? []),
     ]
     // Validation jobs deliberately require the caller's already-authorized

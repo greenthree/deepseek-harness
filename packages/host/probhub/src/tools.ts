@@ -37,7 +37,7 @@ export const Config: z<Config> = z.object({
 
 type ProblemArgs = { problem_id: string }
 type StressArgs = ProblemArgs & { rounds?: number; seed?: number }
-type ParsedOperation = { problemId?: string; extra: readonly string[] }
+type ParsedOperation = { problemId?: string; problemIds?: readonly string[]; extra: readonly string[] }
 
 const PROBLEM_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const MAX_STRESS_ROUNDS = 1_000_000
@@ -45,6 +45,22 @@ const MAX_STRESS_ROUNDS = 1_000_000
 function validateProblemId(value: string): string {
   if (!PROBLEM_ID.test(value)) throw new Error('invalid problem_id: expected a Schema v1 problem id')
   return value
+}
+
+function validateProblemIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 256) {
+    throw new Error('invalid problem_ids: expected an array containing 1 to 256 problem ids')
+  }
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') throw new Error('invalid problem_ids: every item must be a problem id string')
+    const id = validateProblemId(item)
+    if (seen.has(id)) throw new Error(`invalid problem_ids: duplicate problem id ${id}`)
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
 }
 
 function validateStress(args: StressArgs): string[] {
@@ -256,11 +272,12 @@ function registerOperation(
         session: agent.session,
         workspace: workspace.cwd,
         ...(parsed.problemId === undefined ? {} : { problemId: parsed.problemId }),
+        ...(parsed.problemIds === undefined ? {} : { problemIds: parsed.problemIds }),
         ...(parsed.extra.length === 0 ? {} : { args: parsed.extra }),
       }
       const id = ctx.jobs.start({
         kind: 'probhub',
-        label: `${operation}${parsed.problemId === undefined ? '' : ` ${parsed.problemId}`}`,
+        label: `${operation}${parsed.problemIds !== undefined ? ` ${parsed.problemIds.join(',')}` : parsed.problemId === undefined ? '' : ` ${parsed.problemId}`}`,
         owner: agent,
         outputLimitBytes: maxOutputBytes,
         run: () => createCoreJobHooks(ctx, { command, maxOutputBytes }, request),
@@ -406,17 +423,22 @@ export function apply(ctx: Context, config: Config = {}): void {
     ctx,
     'build',
     'probhub_build',
-    'Build one Schema v1 problem package in the background after Core verifies the collection sealed revisions. Formal build and publication remain owned by ProbHub Core.',
+    'Build one or more Schema v1 problem packages as one collection batch after Core verifies sealed revisions. Formal build and publication remain owned by ProbHub Core.',
     {
-      problem_id: { type: 'string', required: true, description: 'Schema v1 problem id from the current workspace.' },
+      problem_ids: {
+        type: 'array',
+        required: true,
+        items: { type: 'string' },
+        description: 'One to 256 distinct Schema v1 problem ids from the current workspace; Core builds them as one collection batch.',
+      },
       confirm: { type: 'boolean', required: true, const: true, description: 'Required explicit confirmation that formal PDF/ZIP/metadata publication is intended.' },
       no_cache: { type: 'boolean', description: 'Ignore existing Judge caches for this build.' },
     },
     (args) => {
-      const value = args as ProblemArgs & { confirm?: boolean; no_cache?: boolean }
+      const value = args as { problem_ids?: unknown; confirm?: boolean; no_cache?: boolean }
       if (value.confirm !== true) throw new Error('probhub_build requires confirm: true for formal artifact publication')
       return {
-        problemId: validateProblemId(value.problem_id),
+        problemIds: validateProblemIds(value.problem_ids),
         extra: value.no_cache === true ? ['--no-cache'] : [],
       }
     },

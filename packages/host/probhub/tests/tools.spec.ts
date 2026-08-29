@@ -132,7 +132,7 @@ describe('ProbHub background tools', () => {
     expect(spawned[1]?.argv).toEqual(expect.arrayContaining([
       '--json', 'verify-package', join(workspace, 'A01.zip'), '--require-pdf', '--problem', 'A01',
     ]))
-    expect(ctx.tools.get('probhub_build')?.isConcurrencySafe?.({ problem_id: 'A01', confirm: true })).toBe(false)
+    expect(ctx.tools.get('probhub_build')?.isConcurrencySafe?.({ problem_ids: ['A01'], confirm: true })).toBe(false)
     expect(ctx.tools.get('probhub_generation_status')?.isConcurrencySafe?.({})).toBe(true)
   })
 
@@ -148,11 +148,11 @@ describe('ProbHub background tools', () => {
     })).resolves.toMatchObject({ isError: true })
     await expect(ctx.tools.execute({
       signal: new AbortController().signal, callId: CallId('build-no-confirm'), name: 'probhub_build',
-      arguments: { problem_id: 'A01' }, agent,
+      arguments: {}, agent,
     })).resolves.toMatchObject({ isError: true })
     const buildResult = await ctx.tools.execute({
       signal: new AbortController().signal, callId: CallId('build-confirmed'), name: 'probhub_build',
-      arguments: { problem_id: 'A01', confirm: true }, agent,
+      arguments: { problem_ids: ['A01'], confirm: true }, agent,
     })
     expect(buildResult.isError).toBe(true)
     const buildText = buildResult.content[0]?.type === 'text' ? buildResult.content[0].text : ''
@@ -167,12 +167,12 @@ describe('ProbHub background tools', () => {
       signal: new AbortController().signal,
       callId: CallId('build-approved'),
       name: 'probhub_build',
-      arguments: { problem_id: 'A01', confirm: true },
+      arguments: { problem_ids: ['A01', 'B02'], confirm: true },
       agent,
     })
     expect(result.isError).toBe(false)
     expect(result.value).toMatchObject({ kind: 'background', jobId: 'probhub-1' })
-    expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--json', 'build', 'A01']))
+    expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--json', 'build', 'A01', 'B02']))
     spawned[0]!.finish!({ exitCode: 0, signal: null })
     await expect(ctx.jobs.wait('probhub-1' as never, 1000, agent)).resolves.toMatchObject({ status: 'completed' })
   })
