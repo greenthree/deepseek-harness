@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-29-standalone-probhub-bundle.md
-2026-08-29-standalone-probhub-bundle.md: b8d1d88ef470e97510cd9deb2ac048961860ac36
-2026-08-29-standalone-probhub-bundle.zh.md: 8e1c9c6af2e689042e4cc865d4cf72dcfb3450b4
+2026-08-29-standalone-probhub-bundle.md: 71a88d82da698c64f28b8c392a5ceff2b22b47c0
+2026-08-29-standalone-probhub-bundle.zh.md: 74974e4147b884fa3de75e48a92f6503dff6e243

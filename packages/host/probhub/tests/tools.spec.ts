@@ -160,6 +160,23 @@ describe('ProbHub background tools', () => {
     expect(spawned).toHaveLength(0)
   })
 
+  it('starts a confirmed build only after the normal approval seam allows it', async () => {
+    const { ctx, agent, spawned } = await setup(undefined, 'workspace-write')
+    ctx.provide('approval', { request: async () => 'allowed-once' } as never)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('build-approved'),
+      name: 'probhub_build',
+      arguments: { problem_id: 'A01', confirm: true },
+      agent,
+    })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ kind: 'background', jobId: 'probhub-1' })
+    expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--json', 'build', 'A01']))
+    spawned[0]!.finish!({ exitCode: 0, signal: null })
+    await expect(ctx.jobs.wait('probhub-1' as never, 1000, agent)).resolves.toMatchObject({ status: 'completed' })
+  })
+
   it('keeps delivery state in bounded job output without exposing paths', async () => {
     const output = JSON.stringify({
       ok: true,

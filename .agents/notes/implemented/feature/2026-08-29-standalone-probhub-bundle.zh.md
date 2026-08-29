@@ -10,7 +10,7 @@ ProbHub bridge 和 Web 工作台目前与下游 dsh checkout 绑定。dsh 用户
 
 ## Decision
 
-发布一个独立的下游 dsh Bundle `@deepseek-ai/dsh-probhub`，声明 `dsh.bundle.patch`，并挂载已有的 ProbHub Host bridge 和后台验证工具。Bundle 依赖现有 Client 包提供的匹配下游 Web 工作台，不尝试向原版 Web 客户端补充 UI。Bundle 通过 `dsh plugin --profile web add <package>` 安装，并提供预构建产物，因此普通 npm 或 tarball 安装不会执行源码 checkout。ProbHub Core 继续负责工作区校验、进程控制、evidence、锁和事务发布。
+发布一个独立的下游 dsh Bundle `@deepseek-ai/dsh-probhub`，声明 `dsh.bundle.patch`，并挂载已有的 ProbHub Host bridge、验证/交付后台任务和有界只读查询。Bundle 依赖现有 Client 包提供的匹配下游 Web 工作台，不尝试向原版 Web 客户端补充 UI。Bundle 通过 `dsh plugin --profile web add <package>` 安装，并提供预构建产物，因此普通 npm 或 tarball 安装不会执行源码 checkout。ProbHub Core 继续负责工作区校验、进程控制、evidence、锁和事务发布。
 
 默认 Web Bundle 不挂载可选的 ProbHub Host 行和验证 Consumer。安装独立 Bundle 后，这些行才会进入 profile 层，因此集成可以显式启用，也可以在不改变 dsh Web 外壳的情况下移除。Host 与 Bundle 属于独立的 `probhub` 发布族，共用独立于 dsh 根版本的版本线，从 `probhub-v<版本>` tag 发布，并由 `release-probhub.yml` 和 `release-probhub-publish.yml` 按 Host 后 Bundle 的顺序打包与发布。官方 dsh 发布族排除这两个包。
 
