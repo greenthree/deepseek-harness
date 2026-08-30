@@ -873,7 +873,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/host/probhub/src/index.ts:23`](../packages/host/probhub/src/index.ts)
+Source: [`packages/host/probhub/src/index.ts:25`](../packages/host/probhub/src/index.ts)
 
 <a id="deepseek-aidsh-host-webserver"></a>
 
