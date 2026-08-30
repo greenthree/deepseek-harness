@@ -286,8 +286,8 @@ async function bindProblemSelection(
     runCore(ctx, config, workspace.cwd, 'report', [], session.session),
     runCore(ctx, config, workspace.cwd, 'status', [], session.session),
   ])
-  if (!report.adapterOk || !report.coreOk) {
-    json(res, 502, { ok: false, state: 'error', code: report.error ?? 'core_failed', error: 'ProbHub report is unavailable' })
+  if (!report.adapterOk || !status.adapterOk) {
+    json(res, 502, { ok: false, state: 'error', code: report.error ?? status.error ?? 'core_failed', error: 'ProbHub report/status is unavailable' })
     return
   }
   if (latestSelections.get(session.id) !== sequence) {
