@@ -9,11 +9,11 @@ import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { dirname, join } from 'node:path'
 import { lstat, realpath, stat } from 'node:fs/promises'
 import {
-  createCoreJobHooks,
   DEFAULT_CORE_RUNNER_CONFIG,
   runCore,
   resolveWorkspaceForSession,
   emitProbHubTabRequest,
+  startCoreJob,
   type CoreJobRequest,
   type CoreOperation,
 } from './index.ts'
@@ -308,13 +308,13 @@ function registerOperation(
         ...(parsed.problemIds === undefined ? {} : { problemIds: parsed.problemIds }),
         ...(parsed.extra.length === 0 ? {} : { args: parsed.extra }),
       }
-      const id = ctx.jobs.start({
-        kind: 'probhub',
-        label: `${operation}${parsed.problemIds !== undefined ? ` ${parsed.problemIds.join(',')}` : parsed.problemId === undefined ? '' : ` ${parsed.problemId}`}`,
-        owner: agent,
-        outputLimitBytes: maxOutputBytes,
-        run: () => createCoreJobHooks(ctx, { command, maxOutputBytes }, request),
-      })
+      const id = startCoreJob(
+        ctx,
+        { command, maxOutputBytes },
+        request,
+        agent,
+        `${operation}${parsed.problemIds !== undefined ? ` ${parsed.problemIds.join(',')}` : parsed.problemId === undefined ? '' : ` ${parsed.problemId}`}`,
+      )
       return { kind: 'background' as const, jobId: id }
     },
     presentCall: args => presentTitle(operation, args),

@@ -75,6 +75,37 @@ describe('host ProbHub bridge', () => {
     expect(JSON.parse(body())).toEqual({ ok: true, state: 'ready' })
   })
 
+  it('starts only allowlisted non-publishing delivery jobs for the live Session', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-delivery-job-'))
+    mkdirSync(join(root, '.probhub'))
+    mkdirSync(join(root, 'A01'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    try {
+      const { ctx, route } = await mount()
+      const sessionId = 'delivery-session'
+      const attached = { id: sessionId, header: { cwd: root } }
+      const agent = { id: sessionId, session: attached }
+      let started: { kind: string; label: string; run: () => unknown } | undefined
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
+      ctx.provide('agents', { get: (id: string) => id === sessionId ? agent : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'workspace-write', workspaceRoot: root }) } as never)
+      ctx.provide('jobs', { start: (spec: { kind: string; label: string; run: () => unknown }) => { started = spec; return 'probhub-1' } } as never)
+
+      const seal = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/jobs?sessionId=${sessionId}&problemId=A01`, JSON.stringify({ operation: 'seal', noCache: true })), seal.response)
+      expect(seal.response.status).toBe(200)
+      expect(JSON.parse(seal.body())).toMatchObject({ ok: true, job: { id: 'probhub-1', operation: 'seal', problemId: 'A01' } })
+      expect(started).toMatchObject({ kind: 'probhub', label: 'seal A01' })
+
+      const invalid = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/jobs?sessionId=${sessionId}&problemId=A01`, JSON.stringify({ operation: 'build' })), invalid.response)
+      expect(invalid.response.status).toBe(400)
+      expect(JSON.parse(invalid.body())).toMatchObject({ ok: false, code: 'job_operation_invalid' })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('reports missing shared subprocess capability on health', async () => {
     const { route } = await mount()
     const { response: res, body } = response()

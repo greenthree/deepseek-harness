@@ -113,6 +113,7 @@ interface BridgeResponse {
   readonly impact?: { readonly source: boolean; readonly data: boolean; readonly formalArtifacts: boolean }
   readonly expectedRevision?: string
   readonly currentRevision?: string
+  readonly job?: { readonly id: string; readonly operation: CoreOperation; readonly problemId?: string }
 }
 
 interface SessionRef {
@@ -227,7 +228,8 @@ async function handleRequest(
   const isContextRoute = url.pathname === `${PROBHUB_API_PATH}/context`
   const isSourceRoute = url.pathname === `${PROBHUB_API_PATH}/source`
   const isSourceTargetsRoute = url.pathname === `${PROBHUB_API_PATH}/source-targets`
-  const allowed = isContextRoute || (isSourceRoute && req.method === 'POST')
+  const isJobRoute = url.pathname === `${PROBHUB_API_PATH}/jobs`
+  const allowed = isContextRoute || (isSourceRoute && req.method === 'POST') || (isJobRoute && req.method === 'POST')
     ? req.method === 'POST'
     : req.method === 'GET' || req.method === 'HEAD'
   if (!allowed) {
@@ -285,6 +287,10 @@ async function handleRequest(
     await handleSourceTargetsRequest(config, res, workspace.value, url)
     return
   }
+  if (isJobRoute) {
+    await handleDeliveryJobRequest(ctx, config, res, workspace.value, session, req, url)
+    return
+  }
   const operation = url.pathname.slice(`${PROBHUB_API_PATH}/`.length)
   if (operation !== 'overview' && operation !== 'status' && operation !== 'lint') {
     const problemMatch = /^problems\/([^/]+)\/(status|lint|report)$/.exec(operation)
@@ -329,6 +335,8 @@ interface SourceWritePayload {
   readonly target?: unknown
   readonly content?: unknown
   readonly expectedRevision?: unknown
+  readonly operation?: unknown
+  readonly noCache?: unknown
 }
 
 /** Read and validate one bounded JSON source-edit request. */
@@ -402,6 +410,91 @@ async function handleSourceTargetsRequest(
     json(res, 200, { ok: true, state: 'ready', targets })
   } catch (error) {
     json(res, 400, { ok: false, state: 'error', code: 'source_targets_failed', error: error instanceof Error ? error.message : 'source targets could not be listed' })
+  }
+}
+
+interface DeliveryJobPayload {
+  readonly operation?: unknown
+  readonly noCache?: unknown
+}
+
+/** Start one allowlisted non-publishing delivery job for the current problem. */
+async function handleDeliveryJobRequest(
+  ctx: Context,
+  config: Config,
+  res: ServerResponse,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  req: IncomingMessage,
+  url: URL,
+): Promise<void> {
+  let payload: DeliveryJobPayload = {}
+  try {
+    if (req.method === 'POST') payload = await readSourceWritePayload(req, 16 * 1024)
+  } catch {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'delivery job request must be valid JSON' })
+    return
+  }
+  const operation = payload.operation
+  if (operation !== 'checkpoint' && operation !== 'seal' && operation !== 'assemble') {
+    json(res, 400, { ok: false, state: 'error', code: 'job_operation_invalid', error: 'only checkpoint, seal, or assemble may be started from the workbench' })
+    return
+  }
+  if (payload.noCache !== undefined && typeof payload.noCache !== 'boolean') {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'noCache must be a boolean' })
+    return
+  }
+  if (payload.noCache === true && operation !== 'seal') {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'noCache is only supported for seal' })
+    return
+  }
+  const problemId = url.searchParams.get('problemId')
+  if (operation !== 'assemble' && (problemId === null || !PROBLEM_ID.test(problemId))) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
+    return
+  }
+  if (operation === 'assemble' && problemId !== null) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'assemble is workspace-scoped and does not accept a problem id' })
+    return
+  }
+  const agent = ctx.get('agents')?.get(session.id)
+  if (agent === undefined || agent.session.id !== session.id) {
+    json(res, 409, { ok: false, state: 'error', code: 'live_session_required', error: 'a live Harness Session is required to start a delivery job' })
+    return
+  }
+  const sandboxPolicy = ctx.get('sandboxPolicy')
+  if (sandboxPolicy === undefined) {
+    json(res, 403, { ok: false, state: 'error', code: 'workspace_write_required', error: 'workspace-write permission is required to start a delivery job' })
+    return
+  }
+  try {
+    if (sandboxPolicy.resolve({ session: agent.session }).mode !== 'workspace-write') {
+      json(res, 403, { ok: false, state: 'error', code: 'workspace_write_required', error: 'workspace-write permission is required to start a delivery job' })
+      return
+    }
+  } catch {
+    json(res, 503, { ok: false, state: 'error', code: 'workspace_write_unavailable', error: 'workspace-write policy is unavailable' })
+    return
+  }
+  const args = operation === 'seal' && payload.noCache === true ? ['--no-cache'] : []
+  try {
+    const jobId = startCoreJob(ctx, {
+      command: config.command ?? 'probhub/bin/probhub.js',
+      maxOutputBytes: config.maxOutputBytes ?? 1024 * 1024,
+    }, {
+      operation,
+      session: agent.session,
+      workspace: workspace.cwd,
+      ...(problemId === null ? {} : { problemId }),
+      ...(args.length === 0 ? {} : { args }),
+    }, agent, `${operation}${problemId === null ? '' : ` ${problemId}`}`)
+    json(res, 200, {
+      ok: true,
+      state: 'ready',
+      job: { id: String(jobId), operation, ...(problemId === null ? {} : { problemId }) },
+    })
+  } catch {
+    json(res, 503, { ok: false, state: 'error', code: 'job_start_failed', error: 'delivery job could not be started' })
   }
 }
 
@@ -1357,6 +1450,33 @@ export function createCoreJobHooks(
       return safeOutput
     },
   }
+}
+
+/**
+ * Register one validated Core operation in the shared Harness Job registry.
+ * The registry owns lifecycle and visibility; this helper only supplies the
+ * same Core producer used by model-facing tools and browser actions.
+ * @param ctx - Harness context providing the job registry.
+ * @param config - executable path and bounded output settings.
+ * @param request - validated operation and canonical workspace identity.
+ * @param owner - live Agent that owns and may observe the job.
+ * @param label - short user-visible job label.
+ * @returns the registry-issued job id.
+ */
+export function startCoreJob(
+  ctx: Context,
+  config: CoreRunnerConfig,
+  request: CoreJobRequest,
+  owner: Agent,
+  label: string,
+) {
+  return ctx.jobs.start({
+    kind: 'probhub',
+    label,
+    owner,
+    outputLimitBytes: config.maxOutputBytes,
+    run: () => createCoreJobHooks(ctx, config, request),
+  })
 }
 
 function summarizeProblems(status: unknown, lint: unknown): ProblemSummary[] {

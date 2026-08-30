@@ -64,9 +64,9 @@ describe('ProbHub workbench report projection', () => {
     expect(screen.getByRole('button', { name: '健康与评测' }).getAttribute('aria-selected')).toBe('true')
 
     expect(screen.getByText('健康摘要')).toBeTruthy()
-    expect(screen.getByText('Judge QA')).toBeTruthy()
+    expect(screen.getAllByText('Judge QA')).not.toHaveLength(0)
     expect(screen.getByText('matched')).toBeTruthy()
-    expect(screen.getByText('passed')).toBeTruthy()
+    expect(screen.getAllByText('passed')).not.toHaveLength(0)
     expect(screen.getByText('1 个错解覆盖组')).toBeTruthy()
   })
 
@@ -90,6 +90,29 @@ describe('ProbHub workbench report projection', () => {
       expect(taskRegion.textContent).toContain(status)
     }
     expect(taskRegion.textContent).not.toContain('not-probhub')
+  })
+
+  it('starts a non-publishing checkpoint job from the delivery checklist', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/probhub/api/jobs')) {
+        return new Response(JSON.stringify({ ok: true, state: 'ready', job: { id: 'probhub-1', operation: 'checkpoint', problemId: 'A01' } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({
+        state: 'ready', workspaceId: 'workspace-a',
+        problems: [{ id: 'A01', title: 'Alpha', status: 'stale', lintOk: true, revision: 'a'.repeat(64) }],
+        report: { ok: true, problems: [{ id: 'A01', judgeQa: { state: 'passed' }, calibration: { state: 'current' } }] },
+      }), { status: 200 })
+    })
+    await act(async () => { await probHubController.refresh('session-a') })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessionsWithJobs()} />)
+    await act(async () => { screen.getByRole('button', { name: '健康与评测' }).click() })
+
+    expect(screen.getByRole('region', { name: 'ProbHub 交付清单' })).toBeTruthy()
+    await act(async () => { screen.getByRole('button', { name: 'Checkpoint' }).click() })
+    expect((await screen.findByRole('status')).textContent).toContain('probhub-1')
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/jobs'))).toBe(true)
   })
 
   it('applies a validated Host tab hint without POSTing selection context', async () => {

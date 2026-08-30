@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProbHubWorkbench.module.css'
-import { listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, useProbHub, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
+import { listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
 
 /** Read-only projection returned by the Harness ProbHub prefix route. */
 export interface ProbHubProblem {
@@ -13,6 +13,7 @@ export interface ProbHubProblem {
   judge?: string
   difficulty?: string
   status?: string
+  lintOk?: boolean
   revision?: string
   generation?: string
 }
@@ -129,6 +130,16 @@ function jobStatusLabel(status: JobView['status']): JobView['status'] {
   }
 }
 
+function deliveryStatus(value: string | undefined): string {
+  return value === undefined || value.length === 0 ? '待检查' : value
+}
+
+function deliveryOperationLabel(operation: ProbHubDeliveryOperation): string {
+  if (operation === 'checkpoint') return 'Checkpoint'
+  if (operation === 'seal') return 'Seal'
+  return '组装预览'
+}
+
 
 function StateNotice({ overview }: { overview: ProbHubOverview }) {
   const title = overview.state === 'migration_required'
@@ -161,6 +172,10 @@ function WorkbenchBody({
   onChangeEditor,
   onSaveEditor,
   onReloadEditor,
+  deliveryBusy,
+  deliveryError,
+  deliveryMessage,
+  onStartDelivery,
 }: {
   problem: ProbHubProblem | undefined
   report: ProbHubProblemReport | undefined
@@ -173,6 +188,10 @@ function WorkbenchBody({
   onChangeEditor: (content: string) => void
   onSaveEditor: () => void
   onReloadEditor: () => void
+  deliveryBusy: ProbHubDeliveryOperation | undefined
+  deliveryError: string | undefined
+  deliveryMessage: string | undefined
+  onStartDelivery: (operation: ProbHubDeliveryOperation) => void
 }) {
   if (problem === undefined) {
     return <StateNotice overview={EMPTY_OVERVIEW} />
@@ -231,6 +250,25 @@ function WorkbenchBody({
     if (problem.status === undefined && report === undefined && jobs.length === 0) return <StateNotice overview={EMPTY_OVERVIEW} />
     return (
       <div className={css.previewStack}>
+        <section className={css.deliveryCard} aria-label="ProbHub 交付清单">
+          <div className={css.deliveryHeader}>
+            <div><strong>交付清单</strong><small>状态来自当前 Session；动作只创建后台任务，不发布正式 PDF/ZIP。</small></div>
+            <span>当前状态</span>
+          </div>
+          <ul className={css.deliveryList}>
+            <li><span>规范源</span><strong data-state={problem.status}>{deliveryStatus(problem.status)}</strong></li>
+            <li><span>Lint</span><strong data-state={problem.lintOk === true ? 'passed' : 'pending'}>{problem.lintOk === true ? 'passed' : '待检查'}</strong></li>
+            <li><span>Judge QA</span><strong data-state={report?.judgeQa?.state}>{deliveryStatus(report?.judgeQa?.state)}</strong></li>
+            <li><span>校准</span><strong data-state={report?.calibration?.state}>{deliveryStatus(report?.calibration?.state)}</strong></li>
+            <li><span>预览 generation</span><strong data-state={problem.generation === undefined ? 'missing' : 'available'}>{problem.generation === undefined ? '未组装' : 'available'}</strong></li>
+            <li><span>正式交付</span><strong data-state="manual">需显式 Build</strong></li>
+          </ul>
+          <div className={css.deliveryActions}>
+            {(['checkpoint', 'seal', 'assemble'] as const).map(operation => <button key={operation} type="button" onClick={() => { onStartDelivery(operation) }} disabled={deliveryBusy !== undefined}>{deliveryBusy === operation ? `${deliveryOperationLabel(operation)}…` : deliveryOperationLabel(operation)}</button>)}
+          </div>
+          {deliveryError && <div className={css.editorError} role="alert">{deliveryError}</div>}
+          {deliveryMessage && <div className={css.editorSuccess} role="status">{deliveryMessage}</div>}
+        </section>
         <div className={css.healthCard}>
           <span className={css.healthIcon}>{problem.status === 'current' && report?.judgeQa?.state !== 'failed' ? '✓' : '!'}</span>
           <div><strong>健康摘要</strong><p>状态、数据覆盖、累计约束和 Judge QA 均来自 Core 的脱敏报告。</p></div>
@@ -287,6 +325,10 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [editor, setEditor] = useState<SourceEditorState | undefined>()
   const [sourceTargets, setSourceTargets] = useState<readonly ProbHubSourceTarget[]>([])
+  const [deliveryBusy, setDeliveryBusy] = useState<ProbHubDeliveryOperation | undefined>()
+  const [deliveryError, setDeliveryError] = useState<string | undefined>()
+  const [deliveryMessage, setDeliveryMessage] = useState<string | undefined>()
+  const deliveryRequest = useRef(0)
   const appliedTabRequest = useRef(0)
   const editorRequest = useRef(0)
   const lastStableSession = useRef(sessionId)
@@ -298,6 +340,8 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     : state.jobsBySession[sessionId as SessionId] ?? EMPTY_JOBS)
   const jobs = useMemo(() => filterProbHubJobs(sessionJobs), [sessionJobs])
   const selected = useMemo(() => problems.find(problem => problem.id === selectedId) ?? problems[0], [problems, selectedId])
+  const selectedProblemId = useRef<string | undefined>(undefined)
+  selectedProblemId.current = selected?.id
   const selectedReport = useMemo(
     () => overview.report?.problems?.find(report => report.id === selected?.id),
     [overview.report, selected?.id],
@@ -308,8 +352,12 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
       && lastStableProblem.current !== undefined
       && selected.id !== lastStableProblem.current
     if (sessionChanged || problemChanged) {
+      deliveryRequest.current += 1
       setEditor(undefined)
       setSourceTargets([])
+      setDeliveryBusy(undefined)
+      setDeliveryError(undefined)
+      setDeliveryMessage(undefined)
     }
     lastStableSession.current = sessionId
     if (selected?.id !== undefined) lastStableProblem.current = selected.id
@@ -379,6 +427,24 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     setEditor({ ...result.document, originalContent: result.document.content, message: '已保存。题目状态将在刷新后更新为 stale。' })
     void probHubController.refresh(sessionId)
   }
+  const startDelivery = async (operation: ProbHubDeliveryOperation): Promise<void> => {
+    if (sessionId === undefined || selected === undefined || deliveryBusy !== undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++deliveryRequest.current
+    setDeliveryBusy(operation)
+    setDeliveryError(undefined)
+    setDeliveryMessage(undefined)
+    const result = await startProbHubDeliveryJob(targetSession, operation, operation === 'assemble' ? undefined : targetProblem)
+    if (requestId !== deliveryRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
+    if (result.error !== undefined || result.job === undefined) {
+      setDeliveryBusy(undefined)
+      setDeliveryError(result.error?.message ?? '无法启动 ProbHub 交付任务')
+      return
+    }
+    setDeliveryBusy(undefined)
+    setDeliveryMessage(`已提交 ${deliveryOperationLabel(operation)} 任务（${result.job.id}），可在健康摘要中查看状态。`)
+  }
   useEffect(() => {
     if (tabRequest === undefined || tabRequest.sequence <= appliedTabRequest.current) return
     // The controller already rejects foreign identities, but retain the
@@ -427,6 +493,10 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
                 }}
                 onSaveEditor={() => { void saveEditor() }}
                 onReloadEditor={reloadEditor}
+                deliveryBusy={deliveryBusy}
+                deliveryError={deliveryError}
+                deliveryMessage={deliveryMessage}
+                onStartDelivery={(operation) => { void startDelivery(operation) }}
               />}
           </main>
         </div>
