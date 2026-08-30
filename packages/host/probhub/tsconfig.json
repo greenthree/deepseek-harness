@@ -16,6 +16,7 @@
     { "path": "../../jobs/jobs" },
     { "path": "../../core/tools" },
     { "path": "../../core/agent" },
+    { "path": "../../api/remotes/tsconfig.host.json" },
     { "path": "../../core/system-prompt" },
     { "path": "../../runtime-diagnostics/invariants" }
   ]

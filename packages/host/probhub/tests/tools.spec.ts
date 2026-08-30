@@ -9,7 +9,9 @@ import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { CallId } from '@deepseek-ai/dsh-llm'
+import type { ProbHubTab, ProbHubTabRequestReason } from '@deepseek-ai/dsh-api-remotes/types'
 import * as tools from '../src/tools.ts'
+import { emitProbHubTabRequest } from '../src/index.ts'
 
 interface Spawned {
   argv: readonly string[]
@@ -20,6 +22,24 @@ interface Spawned {
   collected: { stdout: { readFrom: (offset: number) => { text: string; nextOffset: number; lossy: boolean } } }
   finish?: (value: { exitCode: number | null; signal: NodeJS.Signals | null }) => void
 }
+
+// Compile-time contract: event arguments stay branded/stable at the Host
+// emission seam instead of degrading to an anonymous `unknown[]` tuple.
+function probHubNavigationEventTypes(ctx: Context): void {
+  ctx.on('probhub/tab-requested', (sessionId, problemId, tab, reason, source) => {
+    const tabs: ProbHubTab[] = ['statement', 'health', 'pdf']
+    const reasons: ProbHubTabRequestReason[] = ['ai-suggestion', 'tool-result']
+    void sessionId; void problemId; void source; void tabs; void reasons
+    // @ts-expect-error -- unknown tab keys must not enter the typed event.
+    const invalid: ProbHubTab = 'other'
+    void invalid
+    // @ts-expect-error -- arbitrary event reasons are not accepted.
+    const invalidReason: ProbHubTabRequestReason = 'other'
+    void invalidReason
+    void tab; void reason
+  })
+}
+void probHubNavigationEventTypes
 
 const contexts: Context[] = []
 const workspaces: string[] = []
@@ -83,6 +103,8 @@ async function setup(
 describe('ProbHub background tools', () => {
   it('registers all four operations and starts a workspace-write job with restricted argv', async () => {
     const { ctx, agent, spawned } = await setup()
+    const navigation: unknown[][] = []
+    ctx.on('probhub/tab-requested', (...args) => { navigation.push(args) })
     for (const name of ['probhub_judge', 'probhub_stress', 'probhub_judge_qa', 'probhub_mutation']) expect(ctx.tools.get(name)).toBeDefined()
     const result = await ctx.tools.execute({
       signal: new AbortController().signal, callId: CallId('probhub-start'), name: 'probhub_stress',
@@ -91,11 +113,80 @@ describe('ProbHub background tools', () => {
     if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
     expect(result.isError).toBe(false)
     expect(result.value).toMatchObject({ kind: 'background', jobId: 'probhub-1' })
+    expect(navigation).toEqual([['probhub-owner', 'A01', 'health', 'tool-result', 'probhub_stress']])
     expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--json', 'stress', 'A01', '--rounds', '4', '--seed', '7']))
     expect(spawned[0]?.argv).not.toEqual(expect.arrayContaining(['--against']))
     spawned[0]!.finish!({ exitCode: 0, signal: null })
     await ctx.jobs.wait('probhub-1' as never, 1000, agent)
     expect(ctx.jobs.read('probhub-1' as never, agent).text).toContain('all_expectations_met')
+  })
+
+  it('does not publish navigation for an absent agent, stale agent, or invalid problem id', async () => {
+    const { ctx, agent } = await setup()
+    const navigation: unknown[][] = []
+    ctx.on('probhub/tab-requested', (...args) => { navigation.push(args) })
+    expect(emitProbHubTabRequest(ctx, agent, 'A01', 'statement', 'ai-suggestion')).toBe(true)
+    expect(navigation).toEqual([['probhub-owner', 'A01', 'statement', 'ai-suggestion']])
+    navigation.length = 0
+    expect(emitProbHubTabRequest(ctx, undefined, 'A01', 'health', 'ai-suggestion')).toBe(false)
+    expect(emitProbHubTabRequest(ctx, agent, '../escape', 'health', 'ai-suggestion')).toBe(false)
+    expect(emitProbHubTabRequest(ctx, agent, 'A01', 'unknown' as never, 'ai-suggestion')).toBe(false)
+    expect(emitProbHubTabRequest(ctx, agent, 'A01', 'health', 'unknown' as never)).toBe(false)
+    const stale = { id: 'other-session', session: (agent as { session: unknown }).session } as never
+    expect(emitProbHubTabRequest(ctx, stale, 'A01', 'health', 'ai-suggestion')).toBe(false)
+    expect(emitProbHubTabRequest(ctx, agent, 'A01', 'health', 'ai-suggestion', 'bad source/')).toBe(false)
+    expect(navigation).toEqual([])
+    const fakeTool = await ctx.tools.execute({
+      signal: new AbortController().signal, callId: CallId('fake-probhub-tool'), name: 'probhub_fake',
+      arguments: { problem_id: 'A01' }, agent,
+    })
+    expect(fakeTool.isError).toBe(true)
+    expect(navigation).toEqual([])
+  })
+
+  it('keeps a successful tool result when a navigation listener throws', async () => {
+    const { ctx, agent, spawned } = await setup()
+    ctx.on('probhub/tab-requested', () => { throw new Error('UI listener failed') })
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal, callId: CallId('listener-failed'), name: 'probhub_judge',
+      arguments: { problem_id: 'A01' }, agent,
+    })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ kind: 'background', jobId: 'probhub-1' })
+    spawned[0]!.finish!({ exitCode: 0, signal: null })
+    await expect(ctx.jobs.wait('probhub-1' as never, 1000, agent)).resolves.toMatchObject({ status: 'completed' })
+  })
+
+  it('does not navigate on a structured Core business failure returned by a read-only tool', async () => {
+    const { ctx, agent } = await setup(JSON.stringify({ ok: false, status: 'stale' }), 'read-only', true)
+    const navigation: unknown[][] = []
+    ctx.on('probhub/tab-requested', (...args) => { navigation.push(args) })
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal, callId: CallId('report-stale'), name: 'probhub_report',
+      arguments: { problem_id: 'A01' }, agent,
+    })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ ok: false })
+    expect(navigation).toEqual([])
+  })
+
+  it('does not treat an unrelated probhub-prefixed tool as a navigation source', async () => {
+    const { ctx, agent } = await setup()
+    const navigation: unknown[][] = []
+    ctx.on('probhub/tab-requested', (...args) => { navigation.push(args) })
+    ctx.tools.register({
+      name: 'probhub_fake',
+      description: 'test-only unrelated tool',
+      parameters: { problem_id: { type: 'string' } },
+      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } } }, render: () => [] },
+      async execute() { return { ok: true } },
+    } as never)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal, callId: CallId('fake-navigation'), name: 'probhub_fake',
+      arguments: { problem_id: 'A01' }, agent,
+    })
+    expect(result.isError).toBe(false)
+    expect(navigation).toEqual([])
   })
 
   it('registers delivery jobs and read-only delivery queries', async () => {

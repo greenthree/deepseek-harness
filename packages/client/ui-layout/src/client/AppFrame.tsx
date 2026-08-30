@@ -17,6 +17,7 @@ import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './column
 import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
 import { ProbHubWorkbench } from './ProbHubWorkbench.tsx'
+import type { ProbHubWorkbenchProps } from './ProbHubWorkbench.tsx'
 import { probHubController, useProbHub } from './probhub-controller.ts'
 import type { ProbHubControllerState } from './probhub-controller.ts'
 
@@ -30,11 +31,12 @@ export type AppFrameProps =
 function CenterColumn(props: {
   children?: ReactNode
   sessionId?: string | undefined
+  useSessions: NonNullable<ProbHubWorkbenchProps['useSessions']>
   probHub: ProbHubControllerState
 }) {
   const content = props.probHub.snapshot.state === 'unavailable'
     ? props.children
-    : <ProbHubWorkbench sessionId={props.sessionId}>{props.children}</ProbHubWorkbench>
+    : <ProbHubWorkbench sessionId={props.sessionId} useSessions={props.useSessions}>{props.children}</ProbHubWorkbench>
   return <div className={css.centerCol}>{content}</div>
 }
 
@@ -208,7 +210,7 @@ export function AppFrame({
             the shell's own pending rendering. The conversation
             is session-maybe; the strict details entry naturally renders
             empty while no session is current. */}
-        <CenterColumn sessionId={probHubSession} probHub={probHub}>{renderSlot('conversation', {})}</CenterColumn>
+        <CenterColumn sessionId={probHubSession} useSessions={useSessions} probHub={probHub}>{renderSlot('conversation', {})}</CenterColumn>
         <DetailsColumn>{renderSlot('details', {})}</DetailsColumn>
       </>
       <div className={css.overlayLayer} data-shell-overlay>

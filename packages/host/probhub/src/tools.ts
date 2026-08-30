@@ -13,9 +13,26 @@ import {
   DEFAULT_CORE_RUNNER_CONFIG,
   runCore,
   resolveWorkspaceForSession,
+  emitProbHubTabRequest,
   type CoreJobRequest,
   type CoreOperation,
 } from './index.ts'
+
+const TOOL_TAB_TARGETS: Readonly<Record<string, 'statement' | 'health' | 'pdf'>> = {
+  probhub_judge: 'health',
+  probhub_stress: 'health',
+  probhub_judge_qa: 'health',
+  probhub_mutation: 'health',
+  probhub_checkpoint: 'health',
+  probhub_seal: 'health',
+  // Background work is shown in Health so its live Job row is immediately
+  // visible; read-only generation/package queries can focus the PDF view.
+  probhub_assemble: 'health',
+  probhub_build: 'health',
+  probhub_generation_status: 'pdf',
+  probhub_report: 'health',
+  probhub_verify_package: 'pdf',
+} as const
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap { probhub: 'probhub' }
@@ -87,6 +104,22 @@ function presentTitle(operation: string, args: unknown): GenericCallView {
     ? (args as { problem_id?: unknown }).problem_id
     : undefined
   return present(`${operation} ${typeof value === 'string' ? value : ''}`)
+}
+
+/** Resolve one bounded problem target from a successful ProbHub tool call. */
+function tabRequestForTool(name: string, args: unknown): { problemId: string; tab: 'statement' | 'health' | 'pdf' } | undefined {
+  const tab = TOOL_TAB_TARGETS[name]
+  if (tab === undefined) return undefined
+  const record = args !== null && typeof args === 'object' && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : undefined
+  const problemId = typeof record?.problem_id === 'string'
+    ? record.problem_id
+    : Array.isArray(record?.problem_ids) && typeof record.problem_ids[0] === 'string'
+      ? record.problem_ids[0]
+      : undefined
+  if (problemId === undefined || !PROBLEM_ID.test(problemId)) return undefined
+  return { problemId, tab }
 }
 
 function jsonResult(_args: unknown, value: unknown): [{ type: 'text'; text: string }] {
@@ -297,6 +330,19 @@ export function apply(ctx: Context, config: Config = {}): void {
     name: 'tool:probhub',
     order: 107,
     text: 'Use ProbHub validation and delivery tools for explicit background work. Keep each returned job id, continue independent work, collect with job_output, and stop jobs that no longer matter. Write operations use the current workspace and the caller\'s already-authorized workspace-write policy.',
+  })
+  // Observe the final immutable tool result. Navigation is advisory: policy
+  // failures and rejected Core calls do not move the browser, and a listener
+  // failure cannot replace the already-committed tool result.
+  ctx.on('tools/result', (exec, result) => {
+    if (result.isError) return
+    // Read-only adapters can return a structured `{ ok: false }` business
+    // result without throwing; that is not a successful Core completion.
+    if (result.value !== null && typeof result.value === 'object' && !Array.isArray(result.value)
+      && 'ok' in result.value && result.value.ok !== true) return
+    const target = tabRequestForTool(exec.name, exec.arguments)
+    if (target === undefined) return
+    emitProbHubTabRequest(ctx, exec.agent, target.problemId, target.tab, 'tool-result', exec.name)
   })
   // A model-visible confirmation is necessary but not sufficient for formal
   // publication. When an approval service is mounted, this asks the human

@@ -20,6 +20,9 @@ import z from '@deepseek-ai/schemastery'
 import type { JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ProbHubTab, ProbHubTabRequestReason } from '@deepseek-ai/dsh-api-remotes/types'
+import type {} from '@deepseek-ai/dsh-api-remotes'
 
 /** Core command configuration for the bridge. */
 export interface Config {
@@ -105,6 +108,54 @@ interface ProblemSelection {
 }
 
 const PROBLEM_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
+function isProbHubTab(value: unknown): value is ProbHubTab {
+  return value === 'statement' || value === 'health' || value === 'pdf'
+}
+
+function isProbHubTabRequestReason(value: unknown): value is ProbHubTabRequestReason {
+  return value === 'ai-suggestion' || value === 'tool-result'
+}
+
+/**
+ * Publish one bounded, UI-only workbench navigation hint for a live Agent.
+ *
+ * This is deliberately not a Remote method: the existing `host/remote-event`
+ * carrier forwards the one-way Cordis event to `ctx.remote.$on` consumers. The
+ * exact Agent identity is checked against the registry before emission, so a
+ * late tool result from a disposed/replaced session cannot steer another
+ * browser Session. No Core command or workspace write is performed here.
+ *
+ * @returns `true` when the event was emitted, `false` when identity or payload
+ * validation failed.
+ */
+export function emitProbHubTabRequest(
+  ctx: Context,
+  agent: Agent | undefined,
+  problemId: string,
+  tab: ProbHubTab,
+  reason: ProbHubTabRequestReason,
+  source?: string,
+): boolean {
+  const rawProblemId: unknown = problemId
+  const rawTab: unknown = tab
+  const rawReason: unknown = reason
+  const rawSource: unknown = source
+  if (agent === undefined || typeof rawProblemId !== 'string' || !PROBLEM_ID.test(rawProblemId)) return false
+  if (!isProbHubTab(rawTab) || !isProbHubTabRequestReason(rawReason)) return false
+  const current = ctx.get('agents')?.get(agent.id)
+  if (current !== agent || agent.session.id !== agent.id) return false
+  if (rawSource !== undefined && (typeof rawSource !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(rawSource))) return false
+  try {
+    if (rawSource === undefined) ctx.emit('probhub/tab-requested', agent.id, rawProblemId, rawTab, rawReason)
+    else ctx.emit('probhub/tab-requested', agent.id, rawProblemId, rawTab, rawReason, rawSource)
+    return true
+  } catch {
+    // Navigation is advisory. A faulty UI listener must never turn a
+    // successfully started/completed Core tool into a failed tool result.
+    return false
+  }
+}
 
 /** Registers the `/probhub` read-only route family. */
 export function apply(ctx: Context, config: Config = {}): void {

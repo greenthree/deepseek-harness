@@ -875,7 +875,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/host/probhub/src/index.ts:23`](../packages/host/probhub/src/index.ts)
+来源：[`packages/host/probhub/src/index.ts:28`](../packages/host/probhub/src/index.ts)
 
 <a id="deepseek-aidsh-host-webserver"></a>
 

@@ -8,9 +8,11 @@
  * presenter, which projects ctx.theme snapshots onto document.body.
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { PanelActions } from './service.ts'
 import type { ProbHubControllerState } from './probhub-controller.ts'
+import { probHubController } from './probhub-controller.ts'
 import { AppFrame } from './AppFrame.tsx'
 import { createLayoutStore } from './stores.ts'
 import { LayoutController } from './service.ts'
@@ -146,6 +148,18 @@ export function apply(ctx: ClientContext): void {
       void disposeService()
     }
   }, 'ui-layout: service + root registration')
+
+  // Host suggestions/tool results use the existing one-way remote-event
+  // carrier. Keep this consumer local and idempotent: only the controller can
+  // accept a current session/problem and it only changes in-memory UI state.
+  ctx.effect(() => {
+    const remote = ctx.get('remote')
+    if (remote === undefined) return () => {}
+    const off = remote.$on('probhub/tab-requested', (sessionId, problemId, tab) => {
+      probHubController.requestTab(tab, sessionId, problemId)
+    })
+    return off
+  }, 'ui-layout: ProbHub tab navigation hints')
 
   // Theme presentation: pure DOM writes from resolved snapshots — initial
   // state through the getter once, then event-driven only; no React path.

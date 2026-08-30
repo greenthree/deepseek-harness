@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProbHubWorkbench.module.css'
 import { useProbHub } from './probhub-controller.ts'
 
@@ -51,8 +53,28 @@ export interface ProbHubOverview {
 }
 
 const EMPTY_OVERVIEW: ProbHubOverview = { state: 'unavailable', problems: [] }
+const EMPTY_JOBS: readonly JobView[] = []
 const TABS = ['题面', '健康与评测', '试卷 PDF'] as const
 type Tab = (typeof TABS)[number]
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected ProbHub UI value: ${String(value)}`)
+}
+
+function displayTab(tab: 'statement' | 'health' | 'pdf'): Tab {
+  switch (tab) {
+    case 'statement': return '题面'
+    case 'health': return '健康与评测'
+    case 'pdf': return '试卷 PDF'
+    default: return assertNever(tab)
+  }
+}
+
+export interface ProbHubWorkbenchProps {
+  sessionId?: string | undefined
+  useSessions: SnapshotSelectorHook<SessionListState>
+  children?: ReactNode
+}
 
 function statusLabel(status: string | undefined): string {
   if (status === 'current') return 'current'
@@ -60,6 +82,23 @@ function statusLabel(status: string | undefined): string {
   if (status === 'blocked') return 'blocked'
   if (status === 'warn') return 'warn'
   return status ?? 'unavailable'
+}
+
+/** The health tab only owns ProbHub jobs; shell and plugin jobs stay in ui-jobs. */
+function filterProbHubJobs(jobs: readonly JobView[]): readonly JobView[] {
+  return jobs.filter(job => job.kind === 'probhub')
+}
+
+/** Keep the displayed lifecycle vocabulary closed to the JobView contract. */
+function jobStatusLabel(status: JobView['status']): JobView['status'] {
+  switch (status) {
+    case 'running': return 'running'
+    case 'stopping': return 'stopping'
+    case 'completed': return 'completed'
+    case 'failed': return 'failed'
+    case 'killed': return 'killed'
+    default: return assertNever(status)
+  }
 }
 
 
@@ -82,9 +121,10 @@ function StateNotice({ overview }: { overview: ProbHubOverview }) {
   )
 }
 
-function WorkbenchBody({ problem, report, tab }: {
+function WorkbenchBody({ problem, report, jobs, tab }: {
   problem: ProbHubProblem | undefined
   report: ProbHubProblemReport | undefined
+  jobs: readonly JobView[]
   tab: Tab
 }) {
   if (problem === undefined) {
@@ -111,7 +151,7 @@ function WorkbenchBody({ problem, report, tab }: {
     )
   }
   if (tab === '健康与评测') {
-    if (problem.status === undefined && report === undefined) return <StateNotice overview={EMPTY_OVERVIEW} />
+    if (problem.status === undefined && report === undefined && jobs.length === 0) return <StateNotice overview={EMPTY_OVERVIEW} />
     return (
       <div className={css.previewStack}>
         <div className={css.healthCard}>
@@ -125,6 +165,27 @@ function WorkbenchBody({ problem, report, tab }: {
           <div className={css.reportCard}><span>累计约束</span><strong>{report.aggregateConstraints?.state ?? 'not-detected'}</strong><small>{report.aggregateConstraints?.multiCaseDetected ? '检测到多测' : '未检测到多测'}</small></div>
           <div className={css.reportCard}><span>校准</span><strong>{report.calibration?.state ?? 'missing'}</strong><small>本机测量仅作参考</small></div>
         </div>}
+        {jobs.length > 0 && <section className={css.jobSummary} aria-label="ProbHub 后台任务">
+          <div className={css.jobSummaryHeader}>
+            <div><strong>后台评测任务</strong><small>当前 Session 的 ProbHub Job</small></div>
+            <span>{jobs.length}</span>
+          </div>
+          <ul className={css.jobList}>
+            {jobs.map((job) => {
+              const status = jobStatusLabel(job.status)
+              return (
+                <li key={job.id} className={css.jobRow} data-status={status}>
+                  <span className={css.jobDot} data-status={status} aria-hidden="true" />
+                  <div className={css.jobIdentity}>
+                    <strong title={job.label}>{job.label}</strong>
+                    {job.detail && <small title={job.detail}>{job.detail}</small>}
+                  </div>
+                  <span className={css.jobStatus} data-status={status}>{status}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </section>}
       </div>
     )
   }
@@ -143,17 +204,31 @@ function WorkbenchBody({ problem, report, tab }: {
  * projection; a missing route never falls back to legacy files or invents
  * problem data.
  */
-export function ProbHubWorkbench({ sessionId, children }: { sessionId?: string | undefined; children?: ReactNode }) {
-  const { snapshot: overview, selectedId } = useProbHub()
+export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWorkbenchProps) {
+  const { snapshot: overview, selectedId, tabRequest } = useProbHub()
   const [tab, setTab] = useState<Tab>('题面')
   const [copilotOpen, setCopilotOpen] = useState(false)
+  const appliedTabRequest = useRef(0)
 
   const problems = overview.problems ?? []
+  const sessionJobs = useSessions(state => sessionId === undefined
+    ? EMPTY_JOBS
+    : state.jobsBySession[sessionId as SessionId] ?? EMPTY_JOBS)
+  const jobs = useMemo(() => filterProbHubJobs(sessionJobs), [sessionJobs])
   const selected = useMemo(() => problems.find(problem => problem.id === selectedId) ?? problems[0], [problems, selectedId])
   const selectedReport = useMemo(
     () => overview.report?.problems?.find(report => report.id === selected?.id),
     [overview.report, selected?.id],
   )
+  useEffect(() => {
+    if (tabRequest === undefined || tabRequest.sequence <= appliedTabRequest.current) return
+    // The controller already rejects foreign identities, but retain the
+    // component-side fence for remounts and stale snapshots: a location hint
+    // may only move the currently rendered Session/problem.
+    if (tabRequest.sessionId !== sessionId || tabRequest.problemId !== selected?.id) return
+    appliedTabRequest.current = tabRequest.sequence
+    setTab(displayTab(tabRequest.tab))
+  }, [selected?.id, sessionId, tabRequest])
   const workspaceLabel = overview.workspaceId
     ?? (overview.workspace?.schemaVersion === 1 ? 'Schema v1 workspace' : '未返回 workspace')
   const isNotice = overview.state !== 'ready'
@@ -175,7 +250,9 @@ export function ProbHubWorkbench({ sessionId, children }: { sessionId?: string |
             <nav className={css.tabs} aria-label="题目视图">
               {TABS.map(item => <button key={item} type="button" aria-selected={tab === item} data-active={tab === item || undefined} onClick={() => { setTab(item) }}>{item}</button>)}
             </nav>
-            {isNotice ? <StateNotice overview={overview} /> : <WorkbenchBody problem={selected} report={selectedReport} tab={tab} />}
+            {isNotice
+              ? <StateNotice overview={overview} />
+              : <WorkbenchBody problem={selected} report={selectedReport} jobs={jobs} tab={tab} />}
           </main>
         </div>
       </section>
