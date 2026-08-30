@@ -252,9 +252,16 @@ describe('host ProbHub bridge', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-source-'))
     mkdirSync(join(root, '.probhub'))
     mkdirSync(join(root, 'A01', 'code'), { recursive: true })
+    mkdirSync(join(root, 'A01', 'data', 'sample'), { recursive: true })
+    mkdirSync(join(root, 'A01', 'data', 'secret'), { recursive: true })
+    mkdirSync(join(root, 'A01', 'code', 'nested'))
     writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
     writeFileSync(join(root, 'A01', 'probhub.yaml'), 'id: A01\n')
     writeFileSync(join(root, 'A01', 'problem.md'), '# Before\n')
+    writeFileSync(join(root, 'A01', 'code', 'std.cpp'), 'int main() {}\n')
+    writeFileSync(join(root, 'A01', 'data', 'sample', '01.in'), '1\n')
+    writeFileSync(join(root, 'A01', 'data', 'secret', '01.in'), '2\n')
+    writeFileSync(join(root, 'A01', 'data', 'secret', '01.ans'), 'answer\n')
     try {
       const { ctx, route } = await mount({ command: join(root, 'fake-probhub.js') })
       const sessionId = 'source-session'
@@ -282,6 +289,21 @@ describe('host ProbHub bridge', () => {
           }
         },
       } as never)
+
+      const targets = response()
+      await route.handler(request('GET', `${PROBHUB_API_PATH}/source-targets?sessionId=${sessionId}&problemId=A01`), targets.response)
+      expect(targets.response.status).toBe(200)
+      expect(JSON.parse(targets.body())).toMatchObject({
+        ok: true,
+        targets: [
+          { target: 'statement', kind: 'statement' },
+          { target: 'config', kind: 'config' },
+          { target: 'code:std.cpp', kind: 'code' },
+          { target: 'sample-input:01.in', kind: 'sample-input' },
+          { target: 'secret-input:01.in', kind: 'secret-input' },
+        ],
+      })
+      expect(JSON.stringify(JSON.parse(targets.body()))).not.toContain('nested')
 
       const read = response()
       await route.handler(request('GET', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01&target=statement`), read.response)
@@ -333,6 +355,70 @@ describe('host ProbHub bridge', () => {
       await route.handler(request('GET', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01&target=code%3A..%2Fescape`), traversal.response)
       expect(traversal.response.status).toBe(400)
       expect(JSON.parse(traversal.body())).toMatchObject({ ok: false, code: 'source_target_invalid' })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the data hash as the revision fence for sample and secret inputs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-data-source-'))
+    mkdirSync(join(root, '.probhub'))
+    mkdirSync(join(root, 'A01', 'data', 'secret'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    writeFileSync(join(root, 'A01', 'probhub.yaml'), 'id: A01\n')
+    writeFileSync(join(root, 'A01', 'problem.md'), '# Problem\n')
+    writeFileSync(join(root, 'A01', 'data', 'secret', '01.in'), 'before\n')
+    try {
+      const { ctx, route } = await mount({ command: join(root, 'fake-probhub.js') })
+      const sessionId = 'data-session'
+      const attached = { id: sessionId, header: { cwd: root } }
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'workspace-write', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      let statusCalls = 0
+      const sourceRevision = 'a'.repeat(64)
+      const initialDataRevision = 'c'.repeat(64)
+      const nextDataRevision = 'd'.repeat(64)
+      ctx.provide('subprocess', {
+        spawn: (_spec: SpawnSpec) => {
+          statusCalls += 1
+          const reader = {
+            readFrom: () => ({
+              text: JSON.stringify({
+                ok: true,
+                problems: { A01: { source_hash: sourceRevision, data_hash: statusCalls < 3 ? initialDataRevision : nextDataRevision } },
+              }),
+              lossy: false,
+            }),
+          }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+
+      const read = response()
+      await route.handler(request('GET', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01&target=secret-input%3A01.in`), read.response)
+      expect(read.response.status).toBe(200)
+      expect(JSON.parse(read.body())).toMatchObject({ source: { revision: initialDataRevision } })
+
+      const save = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01`, JSON.stringify({
+        target: 'secret-input:01.in', content: 'after\n', expectedRevision: initialDataRevision,
+      })), save.response)
+      expect(save.response.status).toBe(200)
+      expect(JSON.parse(save.body())).toMatchObject({ source: { revision: nextDataRevision } })
+      expect(readFileSync(join(root, 'A01', 'data', 'secret', '01.in'), 'utf8')).toBe('after\n')
+
+      const stale = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01`, JSON.stringify({
+        target: 'secret-input:01.in', content: 'lost\n', expectedRevision: initialDataRevision,
+      })), stale.response)
+      expect(stale.response.status).toBe(409)
+      expect(JSON.parse(stale.body())).toMatchObject({ ok: false, code: 'source_conflict', currentRevision: nextDataRevision })
+      expect(readFileSync(join(root, 'A01', 'data', 'secret', '01.in'), 'utf8')).toBe('after\n')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

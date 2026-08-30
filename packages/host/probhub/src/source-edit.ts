@@ -1,7 +1,7 @@
 /** Safe Schema v1 source targets for the downstream workbench editor. */
 
 import { createHash, randomBytes } from 'node:crypto'
-import { chmod, lstat, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 
 /** Files that the workbench may expose as editable UTF-8 text. */
@@ -13,9 +13,16 @@ export interface SourceTarget {
   readonly name?: string
 }
 
+/** Metadata for one source file exposed by the workbench target picker. */
+export interface SourceTargetDescriptor extends SourceTarget {
+  readonly target: string
+  readonly bytes: number
+}
+
 const TARGET_KINDS: readonly SourceTargetKind[] = ['statement', 'config', 'code', 'sample-input', 'secret-input']
 const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const REVISION = /^[a-f0-9]{64}$/
+const MAX_SOURCE_TARGETS = 512
 
 /** Parse the compact query/body representation without accepting paths. */
 export function parseSourceTarget(value: unknown): SourceTarget | undefined {
@@ -49,6 +56,7 @@ export function sourceRevision(bytes: Uint8Array): string {
 /** Resolve one target and prove it remains inside the canonical workspace. */
 export async function resolveSourcePath(workspace: string, problemId: string, target: SourceTarget): Promise<string> {
   const problemRoot = join(workspace, problemId)
+  await assertDirectory(problemRoot)
   let relativePath: string
   if (target.kind === 'statement') relativePath = 'problem.md'
   else if (target.kind === 'config') relativePath = 'probhub.yaml'
@@ -60,6 +68,8 @@ export async function resolveSourcePath(workspace: string, problemId: string, ta
       : join(target.kind === 'sample-input' ? 'data/sample' : 'data/secret', name)
   }
   const candidate = join(problemRoot, relativePath)
+  const parent = dirname(candidate)
+  await assertDirectory(parent)
   const [canonicalWorkspace, canonicalPath] = await Promise.all([realpath(workspace), realpath(candidate)])
   const within = relative(canonicalWorkspace, canonicalPath)
   if (isAbsolute(within) || within === '..' || within.startsWith(`..${requireSeparator(canonicalWorkspace)}`)) {
@@ -69,6 +79,66 @@ export async function resolveSourcePath(workspace: string, problemId: string, ta
   if (!info.isFile() || info.isSymbolicLink()) throw new Error('source target is not a regular file')
   if (!(await stat(canonicalPath)).isFile()) throw new Error('source target is not a regular file')
   return canonicalPath
+}
+
+/**
+ * List the existing UTF-8 source files that the workbench may edit.
+ *
+ * Directory entries are never treated as files, symlinks are ignored, and
+ * invalid or oversized text is omitted. The fixed statement/config files are
+ * required by Schema v1 and therefore fail closed when unavailable.
+ */
+export async function listSourceTargets(
+  workspace: string,
+  problemId: string,
+  maxBytes: number,
+): Promise<readonly SourceTargetDescriptor[]> {
+  const targets: SourceTargetDescriptor[] = []
+  for (const target of [{ kind: 'statement' }, { kind: 'config' }] as const) {
+    const path = await resolveSourcePath(workspace, problemId, target)
+    const file = await readSource(path, maxBytes)
+    targets.push({ ...target, target: sourceTargetId(target), bytes: file.bytes })
+  }
+  for (const [kind, directory] of [
+    ['code', join('code')] as const,
+    ['sample-input', join('data', 'sample')] as const,
+    ['secret-input', join('data', 'secret')] as const,
+  ]) {
+    const directoryPath = join(workspace, problemId, directory)
+    let entries
+    try {
+      entries = await readdir(directoryPath, { withFileTypes: true })
+    } catch (error) {
+      if (isMissingPath(error)) continue
+      throw error
+    }
+    const names = entries
+      .filter(entry => entry.isFile() && !entry.isSymbolicLink() && FILE_NAME.test(entry.name) && !entry.name.toLowerCase().endsWith('.ans'))
+      .map(entry => entry.name)
+      .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    for (const name of names) {
+      const target: SourceTarget = { kind, name }
+      try {
+        const path = await resolveSourcePath(workspace, problemId, target)
+        const file = await readSource(path, maxBytes)
+        targets.push({ ...target, target: sourceTargetId(target), bytes: file.bytes })
+      } catch {
+        // Generated binaries, symlink races, and files that disappear while
+        // listing are not editable targets; the remaining list stays stable.
+      }
+      if (targets.length > MAX_SOURCE_TARGETS) throw new Error('workbench source target limit exceeded')
+    }
+  }
+  return targets
+}
+
+function isMissingPath(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+}
+
+async function assertDirectory(path: string): Promise<void> {
+  const info = await lstat(path)
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('source target parent is not a regular directory')
 }
 
 function requireSeparator(path: string): string {

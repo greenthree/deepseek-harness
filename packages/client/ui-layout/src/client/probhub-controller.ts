@@ -34,6 +34,14 @@ export interface ProbHubSourceDocument {
   readonly impact: { readonly source: boolean; readonly data: boolean; readonly formalArtifacts: boolean }
 }
 
+/** One allowlisted source target returned by the Host bridge. */
+export interface ProbHubSourceTarget {
+  readonly target: string
+  readonly kind: 'statement' | 'config' | 'code' | 'sample-input' | 'secret-input'
+  readonly name?: string
+  readonly bytes: number
+}
+
 /** Structured source edit failure; callers decide how to render it. */
 export interface ProbHubSourceError {
   readonly code: string
@@ -48,6 +56,45 @@ function parseSourceImpact(value: unknown): ProbHubSourceDocument['impact'] | un
   return typeof impact.source === 'boolean' && typeof impact.data === 'boolean' && typeof impact.formalArtifacts === 'boolean'
     ? { source: impact.source, data: impact.data, formalArtifacts: impact.formalArtifacts }
     : undefined
+}
+
+function parseSourceTarget(value: unknown): ProbHubSourceTarget | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.target !== 'string' || typeof record.kind !== 'string' || typeof record.bytes !== 'number' || !Number.isSafeInteger(record.bytes) || record.bytes < 0) return undefined
+  const kind = record.kind
+  if (kind !== 'statement' && kind !== 'config' && kind !== 'code' && kind !== 'sample-input' && kind !== 'secret-input') return undefined
+  const name = record.name
+  if (kind === 'statement' || kind === 'config') {
+    if (name !== undefined || record.target !== kind) return undefined
+    return { target: kind, kind, bytes: record.bytes }
+  }
+  if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name) || name.toLowerCase().endsWith('.ans') || record.target !== `${kind}:${name}`) return undefined
+  return { target: record.target, kind, name, bytes: record.bytes }
+}
+
+/** List the Host-approved source files for one problem. */
+export async function listProbHubSourceTargets(
+  currentSession: string,
+  problemId: string,
+): Promise<{ readonly targets?: readonly ProbHubSourceTarget[]; readonly error?: ProbHubSourceError }> {
+  const params = new URLSearchParams({ sessionId: currentSession, problemId })
+  const response = await fetch(`/probhub/api/source-targets?${params.toString()}`, { headers: { accept: 'application/json' } }).catch(() => undefined)
+  if (response === undefined) return { error: { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' } }
+  let body: unknown
+  try { body = await response.json() } catch { return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效响应' } } }
+  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    const value = body as Record<string, unknown> | null
+    return { error: { code: typeof value?.code === 'string' ? value.code : 'source_targets_failed', message: typeof value?.error === 'string' ? value.error : '无法读取源文件列表' } }
+  }
+  const rawTargets = (body as Record<string, unknown>).targets
+  if (!Array.isArray(rawTargets) || rawTargets.length > 512) return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效目标列表' } }
+  const targets = rawTargets.flatMap((item) => {
+    const target = parseSourceTarget(item)
+    return target === undefined ? [] : [target]
+  })
+  if (targets.length !== rawTargets.length) return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整目标列表' } }
+  return { targets }
 }
 
 /** Read one allowlisted source target through the same-origin Host bridge. */

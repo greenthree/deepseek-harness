@@ -46,6 +46,9 @@
 .editorHeader > div { display: grid; gap: 3px; }
 .editorHeader strong { font-size: 12px; }
 .editorHeader small, .editorActions > span { color: var(--dsw-alias-label-secondary); font-family: var(--ds-font-family-code); font-size: 10px; }
+.editorTargetRow { display: grid; gap: 5px; color: var(--dsw-alias-label-secondary); font-size: 10px; }
+.editorTargetSelect { min-width: 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; padding: 7px 9px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); font-size: 11px; }
+.editorTargetSelect:disabled { cursor: not-allowed; opacity: .65; }
 .sourceEditor { min-height: 280px; width: 100%; box-sizing: border-box; resize: vertical; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 11px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); font-family: var(--ds-font-family-code); font-size: 12px; line-height: 1.55; }
 .sourceEditor:focus { outline: 2px solid var(--dsw-alias-button-info-fill); outline-offset: 1px; }
 .impactNotice { padding: 8px 10px; border-radius: 7px; color: var(--dsw-alias-state-warn-label); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); font-size: 10px; line-height: 1.45; }

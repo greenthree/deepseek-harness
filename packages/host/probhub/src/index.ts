@@ -25,6 +25,7 @@ import type { ProbHubTab, ProbHubTabRequestReason } from '@deepseek-ai/dsh-api-r
 import type {} from '@deepseek-ai/dsh-api-remotes'
 import {
   isSourceRevision,
+  listSourceTargets,
   parseSourceTarget,
   readSource,
   resolveSourcePath,
@@ -32,6 +33,7 @@ import {
   sourceTargetId,
   writeSource,
 } from './source-edit.ts'
+import type { SourceTarget } from './source-edit.ts'
 
 /** Core command configuration for the bridge. */
 export interface Config {
@@ -107,6 +109,7 @@ interface BridgeResponse {
   readonly code?: string
   readonly error?: string
   readonly source?: { readonly target: string; readonly content?: string; readonly revision?: string; readonly bytes?: number }
+  readonly targets?: readonly { readonly target: string; readonly kind: string; readonly name?: string; readonly bytes: number }[]
   readonly impact?: { readonly source: boolean; readonly data: boolean; readonly formalArtifacts: boolean }
   readonly expectedRevision?: string
   readonly currentRevision?: string
@@ -223,6 +226,7 @@ async function handleRequest(
   const url = new URL(req.url ?? '/', 'http://localhost')
   const isContextRoute = url.pathname === `${PROBHUB_API_PATH}/context`
   const isSourceRoute = url.pathname === `${PROBHUB_API_PATH}/source`
+  const isSourceTargetsRoute = url.pathname === `${PROBHUB_API_PATH}/source-targets`
   const allowed = isContextRoute || (isSourceRoute && req.method === 'POST')
     ? req.method === 'POST'
     : req.method === 'GET' || req.method === 'HEAD'
@@ -275,6 +279,10 @@ async function handleRequest(
   }
   if (isSourceRoute) {
     await handleSourceRequest(ctx, config, req, res, workspace.value, session, url, sourceLocks)
+    return
+  }
+  if (isSourceTargetsRoute) {
+    await handleSourceTargetsRequest(config, res, workspace.value, url)
     return
   }
   const operation = url.pathname.slice(`${PROBHUB_API_PATH}/`.length)
@@ -366,11 +374,35 @@ async function currentProblemRevision(
   workspace: ResolvedWorkspace,
   session: SessionRef,
   problemId: string,
+  target: SourceTarget = { kind: 'statement' },
 ): Promise<{ revision?: string; error?: string }> {
   const result = await runCore(ctx, config, workspace.cwd, 'status', [], session.session)
   if (!result.adapterOk) return { error: result.error ?? 'core_unavailable' }
-  const revision = problemIdentity(result.value, problemId).revision
+  const identity = problemIdentity(result.value, problemId)
+  const revision = target.kind === 'sample-input' || target.kind === 'secret-input'
+    ? identity.dataRevision ?? identity.revision
+    : identity.sourceRevision ?? identity.revision
   return revision === undefined ? { error: 'problem_not_found' } : { revision }
+}
+
+/** Return the allowlisted source target metadata for one problem. */
+async function handleSourceTargetsRequest(
+  config: Config,
+  res: ServerResponse,
+  workspace: ResolvedWorkspace,
+  url: URL,
+): Promise<void> {
+  const problemId = url.searchParams.get('problemId')
+  if (problemId === null || !PROBLEM_ID.test(problemId)) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
+    return
+  }
+  try {
+    const targets = await listSourceTargets(workspace.cwd, problemId, config.maxSourceBytes ?? 512 * 1024)
+    json(res, 200, { ok: true, state: 'ready', targets })
+  } catch (error) {
+    json(res, 400, { ok: false, state: 'error', code: 'source_targets_failed', error: error instanceof Error ? error.message : 'source targets could not be listed' })
+  }
 }
 
 /** Handle GET/POST for the explicit, revision-guarded source editor. */
@@ -414,7 +446,7 @@ async function handleSourceRequest(
   if (req.method === 'GET' || req.method === 'HEAD') {
     try {
       const file = await readSource(sourcePath, maxBytes)
-      const revision = await currentProblemRevision(ctx, config, workspace, session, problemId)
+      const revision = await currentProblemRevision(ctx, config, workspace, session, problemId, target)
       if (revision.error !== undefined) {
         json(res, 503, { ok: false, state: 'error', code: revision.error, error: 'Core source revision is unavailable' })
         return
@@ -456,7 +488,7 @@ async function handleSourceRequest(
   }
   const lockKey = `${workspace.cwd}\u0000${problemId}`
   await withSourceLock(sourceLocks, lockKey, async () => {
-    const current = await currentProblemRevision(ctx, config, workspace, session, problemId)
+    const current = await currentProblemRevision(ctx, config, workspace, session, problemId, target)
     if (current.error !== undefined || current.revision === undefined) {
       json(res, 503, { ok: false, state: 'error', code: current.error ?? 'core_unavailable', error: 'Core source revision is unavailable' })
       return
@@ -483,7 +515,7 @@ async function handleSourceRequest(
       json(res, 400, { ok: false, state: 'error', code: 'source_write_failed', error: error instanceof Error ? error.message : 'source target could not be written' })
       return
     }
-    const next = await currentProblemRevision(ctx, config, workspace, session, problemId)
+    const next = await currentProblemRevision(ctx, config, workspace, session, problemId, target)
     if (next.error !== undefined || next.revision === undefined) {
       json(res, 502, { ok: false, state: 'error', code: 'source_saved_revision_unavailable', error: 'source was saved but Core could not compute its new revision' })
       return
@@ -609,22 +641,31 @@ function renderProblemSelection(
   return lines.join('\n')
 }
 
-function problemIdentity(value: unknown, problemId: string): { revision?: string; generation?: string } {
+function problemIdentity(
+  value: unknown,
+  problemId: string,
+): { revision?: string; sourceRevision?: string; dataRevision?: string; generation?: string } {
   if (!isRecord(value) || !isRecord(value.problems)) return {}
   const raw = value.problems[problemId]
   if (!isRecord(raw)) return {}
   const manifest = isRecord(raw.manifest) ? raw.manifest : undefined
+  const sourceRevision = safeMarker(raw.source_hash) ?? safeMarker(manifest?.source_hash)
+  const dataRevision = safeMarker(raw.data_hash) ?? safeMarker(manifest?.data_hash)
   const revision = safeMarker(raw.sealed_revision_id)
     ?? safeMarker(manifest?.sealed_revision_id)
     ?? safeMarker(raw.revision_id)
     ?? safeMarker(manifest?.revision_id)
-    ?? safeMarker(raw.source_hash)
-    ?? safeMarker(manifest?.source_hash)
+    ?? sourceRevision
   const generation = safeMarker(raw.generation_id)
     ?? safeMarker(manifest?.generation_id)
     ?? safeMarker(raw.batch_id)
     ?? safeMarker(manifest?.batch_id)
-  return { ...(revision === undefined ? {} : { revision }), ...(generation === undefined ? {} : { generation }) }
+  return {
+    ...(revision === undefined ? {} : { revision }),
+    ...(sourceRevision === undefined ? {} : { sourceRevision }),
+    ...(dataRevision === undefined ? {} : { dataRevision }),
+    ...(generation === undefined ? {} : { generation }),
+  }
 }
 
 async function runProblemOperation(

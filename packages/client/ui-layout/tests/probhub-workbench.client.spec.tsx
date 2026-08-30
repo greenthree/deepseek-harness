@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { probHubController } from '../src/client/probhub-controller.ts'
 import { ProbHubWorkbench, type ProbHubWorkbenchProps } from '../src/client/ProbHubWorkbench.tsx'
@@ -160,7 +160,58 @@ describe('ProbHub workbench report projection', () => {
     expect((editor as HTMLTextAreaElement).value).toBe('# Editable\n')
     expect(screen.getByText(/revision a{12}/)).toBeTruthy()
     await act(async () => { fireEvent.change(editor, { target: { value: '# Changed\n' } }) })
-    expect(screen.getByRole('button', { name: '保存题面' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '保存源文件' }).hasAttribute('disabled')).toBe(false)
     expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/source'))).toBe(true)
+  })
+
+  it('lists source targets and switches files without losing unsaved edits', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/probhub/api/source-targets')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          state: 'ready',
+          targets: [
+            { target: 'statement', kind: 'statement', bytes: 10 },
+            { target: 'config', kind: 'config', bytes: 20 },
+            { target: 'code:std.cpp', kind: 'code', name: 'std.cpp', bytes: 30 },
+            { target: 'sample-input:01.in', kind: 'sample-input', name: '01.in', bytes: 2 },
+            { target: 'secret-input:01.in', kind: 'secret-input', name: '01.in', bytes: 2 },
+          ],
+        }), { status: 200 })
+      }
+      if (url.includes('/probhub/api/source')) {
+        const target = new URL(url, 'http://localhost').searchParams.get('target') ?? 'statement'
+        const content = target === 'code:std.cpp' ? 'int main() {}\n' : '# Editable\n'
+        return new Response(JSON.stringify({
+          ok: true,
+          state: 'ready',
+          source: { target, content, revision: 'a'.repeat(64), bytes: content.length },
+          impact: { source: !target.includes('input'), data: target.includes('input'), formalArtifacts: true },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({
+        state: 'ready', workspaceId: 'workspace-a',
+        problems: [{ id: 'A01', title: 'Alpha', judge: 'standard', status: 'current', revision: 'a'.repeat(64) }],
+      }), { status: 200 })
+    })
+    await act(async () => { await probHubController.refresh('session-a') })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessionsWithJobs()} />)
+
+    await act(async () => { screen.getByRole('button', { name: '编辑题面' }).click() })
+    await screen.findByRole('textbox', { name: '题面编辑器' })
+    const targetPicker = screen.getByRole('combobox', { name: '编辑目标' })
+    expect(targetPicker.querySelectorAll('option')).toHaveLength(5)
+    await act(async () => { fireEvent.change(targetPicker, { target: { value: 'code:std.cpp' } }) })
+    await waitFor(() => {
+      const currentEditor = screen.getByRole('textbox', { name: '题面编辑器' })
+      if (!(currentEditor instanceof HTMLTextAreaElement)) throw new Error('expected a textarea editor')
+      expect(currentEditor.value).toBe('int main() {}\n')
+    })
+
+    await act(async () => { fireEvent.change(screen.getByRole('textbox', { name: '题面编辑器' }), { target: { value: 'changed\n' } }) })
+    expect(screen.getByRole('combobox', { name: '编辑目标' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '保存源文件' }).hasAttribute('disabled')).toBe(false)
   })
 })

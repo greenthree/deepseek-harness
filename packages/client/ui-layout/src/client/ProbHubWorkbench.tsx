@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProbHubWorkbench.module.css'
-import { probHubController, readProbHubSource, saveProbHubSource, useProbHub, type ProbHubSourceDocument, type ProbHubSourceError } from './probhub-controller.ts'
+import { listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, useProbHub, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
 
 /** Read-only projection returned by the Harness ProbHub prefix route. */
 export interface ProbHubProblem {
@@ -79,6 +79,7 @@ export interface ProbHubWorkbenchProps {
 interface SourceEditorState {
   readonly target: string
   readonly content: string
+  readonly originalContent: string
   readonly revision: string
   readonly bytes: number
   readonly impact?: ProbHubSourceDocument['impact']
@@ -86,6 +87,21 @@ interface SourceEditorState {
   readonly saving?: boolean
   readonly error?: ProbHubSourceError
   readonly message?: string
+}
+
+function sourceTargetLabel(target: ProbHubSourceTarget): string {
+  if (target.kind === 'statement') return '题面 · problem.md'
+  if (target.kind === 'config') return '配置 · probhub.yaml'
+  if (target.kind === 'code') return `代码 · ${target.name ?? target.target}`
+  if (target.kind === 'sample-input') return `样例输入 · ${target.name ?? target.target}`
+  return `正式输入 · ${target.name ?? target.target}`
+}
+
+function clearEditorFeedback(state: SourceEditorState): SourceEditorState {
+  const next = { ...state }
+  delete next.error
+  delete next.message
+  return next
 }
 
 function statusLabel(status: string | undefined): string {
@@ -133,13 +149,27 @@ function StateNotice({ overview }: { overview: ProbHubOverview }) {
   )
 }
 
-function WorkbenchBody({ problem, report, jobs, tab, editor, onOpenEditor, onChangeEditor, onSaveEditor, onReloadEditor }: {
+function WorkbenchBody({
+  problem,
+  report,
+  jobs,
+  tab,
+  editor,
+  sourceTargets,
+  onOpenEditor,
+  onSelectEditorTarget,
+  onChangeEditor,
+  onSaveEditor,
+  onReloadEditor,
+}: {
   problem: ProbHubProblem | undefined
   report: ProbHubProblemReport | undefined
   jobs: readonly JobView[]
   tab: Tab
   editor: SourceEditorState | undefined
+  sourceTargets: readonly ProbHubSourceTarget[]
   onOpenEditor: () => void
+  onSelectEditorTarget: (target: string) => void
   onChangeEditor: (content: string) => void
   onSaveEditor: () => void
   onReloadEditor: () => void
@@ -148,12 +178,13 @@ function WorkbenchBody({ problem, report, jobs, tab, editor, onOpenEditor, onCha
     return <StateNotice overview={EMPTY_OVERVIEW} />
   }
   if (tab === '题面') {
+    const editorTarget = editor === undefined ? undefined : sourceTargets.find(target => target.target === editor.target)
     return (
       <div className={css.previewStack}>
         <div className={css.previewCard}>
           <div className={css.previewEyebrow}>题面预览 · 只读</div>
           <h3>{problem.title || problem.id}</h3>
-          <p>题面内容来自当前 Session 的规范工作区。编辑会先校验 Core revision，保存只写入 <code>problem.md</code>。</p>
+          <p>题面内容来自当前 Session 的规范工作区。编辑会先校验 Core revision，保存只写入白名单中的当前源文件。</p>
           {editor === undefined && <>
             <div className={css.skeletonLine} /><div className={css.skeletonLine} /><div className={css.skeletonLineShort} />
             <button className={css.editorButton} type="button" onClick={onOpenEditor}>编辑题面</button>
@@ -161,16 +192,27 @@ function WorkbenchBody({ problem, report, jobs, tab, editor, onOpenEditor, onCha
           {editor?.loading && <div className={css.editorNotice}>正在读取题面…</div>}
           {editor && !editor.loading && <div className={css.editorPanel}>
             <div className={css.editorHeader}>
-              <div><strong>题面编辑</strong><small>workspace-write · revision {editor.revision.slice(0, 12)}…</small></div>
+              <div><strong>{editorTarget === undefined ? '源文件编辑' : sourceTargetLabel(editorTarget)}</strong><small>workspace-write · revision {editor.revision.slice(0, 12)}…</small></div>
               <button className={css.editorButtonSecondary} type="button" onClick={onReloadEditor} disabled={editor.saving}>重新读取</button>
             </div>
+            <label className={css.editorTargetRow}>编辑目标
+              <select
+                className={css.editorTargetSelect}
+                aria-label="编辑目标"
+                value={editor.target}
+                disabled={editor.saving || editor.content !== editor.originalContent}
+                onChange={(event) => { onSelectEditorTarget(event.target.value) }}
+              >
+                {sourceTargets.map(target => <option key={target.target} value={target.target}>{sourceTargetLabel(target)}</option>)}
+              </select>
+            </label>
             <textarea className={css.sourceEditor} value={editor.content} onChange={(event) => { onChangeEditor(event.target.value) }} spellCheck={false} aria-label="题面编辑器" />
             {editor.impact && <div className={css.impactNotice}>保存后将标记 source 与正式 PDF/ZIP 为 stale，需要重新 lint、验证和分发。</div>}
             {editor.error && <div className={css.editorError} role="alert">{editor.error.message}{editor.error.code === 'source_conflict' && ' 请重新读取后再保存。'}</div>}
             {editor.message && <div className={css.editorSuccess} role="status">{editor.message}</div>}
             <div className={css.editorActions}>
               <span>{editor.bytes} bytes</span>
-              <button className={css.editorButton} type="button" onClick={onSaveEditor} disabled={editor.saving || editor.content.length === 0}>{editor.saving ? '保存中…' : '保存题面'}</button>
+              <button className={css.editorButton} type="button" onClick={onSaveEditor} disabled={editor.saving || editor.content === editor.originalContent}>{editor.saving ? '保存中…' : '保存源文件'}</button>
             </div>
           </div>}
         </div>
@@ -244,7 +286,11 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
   const [tab, setTab] = useState<Tab>('题面')
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [editor, setEditor] = useState<SourceEditorState | undefined>()
+  const [sourceTargets, setSourceTargets] = useState<readonly ProbHubSourceTarget[]>([])
   const appliedTabRequest = useRef(0)
+  const editorRequest = useRef(0)
+  const lastStableSession = useRef(sessionId)
+  const lastStableProblem = useRef<string | undefined>(undefined)
 
   const problems = overview.problems ?? []
   const sessionJobs = useSessions(state => sessionId === undefined
@@ -256,21 +302,69 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     () => overview.report?.problems?.find(report => report.id === selected?.id),
     [overview.report, selected?.id],
   )
-  useEffect(() => { setEditor(undefined) }, [selected?.id, sessionId])
+  useEffect(() => {
+    const sessionChanged = lastStableSession.current !== sessionId
+    const problemChanged = selected?.id !== undefined
+      && lastStableProblem.current !== undefined
+      && selected.id !== lastStableProblem.current
+    if (sessionChanged || problemChanged) {
+      setEditor(undefined)
+      setSourceTargets([])
+    }
+    lastStableSession.current = sessionId
+    if (selected?.id !== undefined) lastStableProblem.current = selected.id
+  }, [selected?.id, sessionId])
+  const readEditorTarget = async (target: string): Promise<void> => {
+    if (sessionId === undefined || selected === undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++editorRequest.current
+    setEditor((current) => {
+      const base = current ?? { target, content: '', originalContent: '', revision: '', bytes: 0 }
+      const next = clearEditorFeedback(base)
+      return {
+        ...next,
+        target,
+        loading: true,
+        saving: false,
+      }
+    })
+    const result = await readProbHubSource(targetSession, targetProblem, target)
+    if (requestId !== editorRequest.current || targetSession !== sessionId || targetProblem !== selected.id) return
+    if (result.error !== undefined || result.document === undefined) {
+      setEditor(current => current === undefined ? current : { ...current, loading: false, error: result.error ?? { code: 'source_read_failed', message: '无法读取源文件' } })
+      return
+    }
+    setEditor({ ...result.document, originalContent: result.document.content })
+  }
   const openEditor = async (): Promise<void> => {
     if (sessionId === undefined || selected === undefined) return
     const targetSession = sessionId
     const targetProblem = selected.id
-    setEditor({ target: 'statement', content: '', revision: '', bytes: 0, loading: true })
-    const result = await readProbHubSource(targetSession, targetProblem)
-    if (targetSession !== sessionId || targetProblem !== selected.id) return
+    const requestId = ++editorRequest.current
+    setEditor({ target: 'statement', content: '', originalContent: '', revision: '', bytes: 0, loading: true })
+    const [targetsResult, result] = await Promise.all([
+      listProbHubSourceTargets(targetSession, targetProblem),
+      readProbHubSource(targetSession, targetProblem),
+    ])
+    if (requestId !== editorRequest.current || targetSession !== sessionId || targetProblem !== selected.id) return
+    if (targetsResult.targets !== undefined) setSourceTargets(targetsResult.targets)
     if (result.error !== undefined || result.document === undefined) {
-      setEditor({ target: 'statement', content: '', revision: '', bytes: 0, error: result.error ?? { code: 'source_read_failed', message: '无法读取题面' } })
+      setEditor({ target: 'statement', content: '', originalContent: '', revision: '', bytes: 0, error: result.error ?? { code: 'source_read_failed', message: '无法读取题面' } })
       return
     }
-    setEditor({ ...result.document })
+    if (targetsResult.targets === undefined) setSourceTargets([{ target: result.document.target, kind: 'statement', bytes: result.document.bytes }])
+    setEditor({ ...result.document, originalContent: result.document.content })
   }
-  const reloadEditor = (): void => { void openEditor() }
+  const selectEditorTarget = (target: string): void => {
+    if (editor !== undefined && editor.content !== editor.originalContent) {
+      setEditor(current => current === undefined ? current : { ...current, error: { code: 'source_unsaved', message: '请先保存或重新读取当前文件，再切换编辑目标。' } })
+      return
+    }
+    if (!sourceTargets.some(item => item.target === target)) return
+    void readEditorTarget(target)
+  }
+  const reloadEditor = (): void => { void readEditorTarget(editor?.target ?? 'statement') }
   const saveEditor = async (): Promise<void> => {
     if (sessionId === undefined || selected === undefined || editor === undefined || editor.loading || editor.saving) return
     const targetSession = sessionId
@@ -282,7 +376,7 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
       setEditor(current => current === undefined ? current : { ...current, saving: false, error: result.error ?? { code: 'source_write_failed', message: '保存题面失败' } })
       return
     }
-    setEditor({ ...result.document, message: '已保存。题目状态将在刷新后更新为 stale。' })
+    setEditor({ ...result.document, originalContent: result.document.content, message: '已保存。题目状态将在刷新后更新为 stale。' })
     void probHubController.refresh(sessionId)
   }
   useEffect(() => {
@@ -323,11 +417,13 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
                 jobs={jobs}
                 tab={tab}
                 editor={editor}
+                sourceTargets={sourceTargets}
                 onOpenEditor={() => { void openEditor() }}
+                onSelectEditorTarget={selectEditorTarget}
                 onChangeEditor={(content) => {
                   setEditor(current => current === undefined
                     ? current
-                    : { ...current, content, bytes: new TextEncoder().encode(content).byteLength })
+                    : { ...clearEditorFeedback(current), content, bytes: new TextEncoder().encode(content).byteLength })
                 }}
                 onSaveEditor={() => { void saveEditor() }}
                 onReloadEditor={reloadEditor}
