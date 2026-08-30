@@ -10,7 +10,7 @@ ProbHub 工作台的只读题目列表能够选择题目，但题面和 AI 副�
 
 ## Decision
 
-DSH Host 在现有 `/probhub/api/overview` 中调用 Core 的只读 `report`，并通过 `/probhub/api/problems/<id>/report` 提供单题读取。Host 只投影题目元数据、测试点计数、数据组角色、累计约束状态、校准/QA/mutation 状态和有限诊断代码与级别；源码路径、secret、evidence 正文及原始诊断消息不会跨越 Host。工作台在题面 Tab 显示测试点和累计约束，在健康 Tab 显示数据组、Judge QA、累计约束和校准状态，AI 副驾驶显示同一份选题上下文。所有请求继续从当前 Harness Session 的 canonical cwd 派生，并保持只读策略。
+DSH Host 在现有 `/probhub/api/overview` 中调用 Core 的只读 `report`，并通过 `/probhub/api/problems/<id>/report` 提供单题读取。Host 只投影题目元数据、测试点计数、数据组角色、累计约束状态、校准/QA/mutation 状态和有限诊断代码与级别；源码路径、secret、evidence 正文及原始诊断消息不会跨越 Host。工作台在题面 Tab 显示测试点和累计约束，在健康 Tab 显示数据组、Judge QA、累计约束和校准状态，AI 副驾驶显示同一份选题上下文。选中题目还会调用 Host 的 `POST /probhub/api/context`：Host 先用 Core 的 status/report 校验题目，再替换 live Agent scoped context 中唯一的 `probhub:selected-problem` 提示上下文；Harness 既有的运行时上下文投影会把有界摘要记录到下一次模型请求，浏览器快速切换时会取消已被替代的请求。所有请求继续从当前 Harness Session 的 canonical cwd 派生，并保持只读策略。
 
 ## Alternatives considered
 
@@ -22,4 +22,4 @@ DSH Host 在现有 `/probhub/api/overview` 中调用 Core 的只读 `report`，�
 
 ## Consequences
 
-工作台和副驾驶可以在不写入规范源或正式生成物的情况下看到同一份 Core 验证上下文；Overview 会多启动一次只读 report 子进程，报告本身仍由 Core 计算。没有 ProbHub Host 路由的 profile 保留原有 DSH 会话外壳；已安装 Host 返回 `migration_required` 或其他真实错误时才显示 fail-closed 工作台提示。当前切片显示结构化摘要，不提供题面全文编辑、验证任务启动按钮或正式交付操作；这些仍属于后续 P1/P2。
+工作台和副驾驶可以在不写入规范源或正式生成物的情况下看到同一份 Core 验证上下文；Overview 会多启动一次只读 report 子进程，选题时还会执行有界的 status/report 读取，然后替换 scoped prompt context。报告本身仍由 Core 计算。没有 ProbHub Host 路由的 profile 保留原有 DSH 会话外壳；已安装 Host 返回 `migration_required` 或其他真实错误时才显示 fail-closed 工作台提示。当前切片显示结构化摘要并绑定到下一次模型请求，不提供题面全文编辑、验证任务启动按钮或正式交付操作；这些仍属于后续 P1/P2。

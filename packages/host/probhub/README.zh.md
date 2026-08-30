@@ -4,7 +4,7 @@
 
 ProbHub Workspace Schema v1 项目的 Host bridge。插件在现有 `webServer` 上注册 `/probhub` 和 `/probhub/api/*`，不打开第二监听端口，也不嵌入 ProbHub UI。API 请求携带不透明的 `sessionId` 选择器，并先在 live 或持久化 Session header 中验证，再使用其规范 `cwd`。只有 `<cwd>/.probhub/workspace.yaml` 存在时才接受工作区；不会回退到旧 metadata 或生成物。
 
-`GET /probhub/api/overview` 执行只读 Core `status`、`lint` 和 `report`，为工作台返回有界 JSON 投影；`GET /probhub/api/status` 和 `/lint` 暴露对应 Core 结果；`/probhub/api/problems/<id>/status`、`/lint` 和 `/report` 将读取限定到经过验证的题目 ID。`GET /probhub/api/health` 报告共享 subprocess 能力是否挂载。非 GET、未知路由、缺失会话、不可访问 cwd 和缺少 Schema v1 工作区均以结构化 JSON fail closed。可选的 `@deepseek-ai/dsh-host-probhub/tools` Consumer 还提供面向模型的验证、交付和只读操作：所有操作从当前 Session 派生工作区并调用 Core 的 `--json` CLI；写任务要求调用者已经获准使用 `workspace-write`，只读查询使用现有只读策略。`probhub_build` 还要求 `confirm: true` 和标准 DSH approval 通道，因为它会发布正式 PDF、ZIP、metadata 与 Manifest。任意路径、`--against` 和 `--fixate` 均不可用。Report 只保留题目元数据、测试点计数、数据组职责、累计约束、校准和 QA 状态，以及不含源码路径和 evidence 正文的有界诊断。
+`GET /probhub/api/overview` 执行只读 Core `status`、`lint` 和 `report`，为工作台返回有界 JSON 投影；`GET /probhub/api/status` 和 `/lint` 暴露对应 Core 结果；`/probhub/api/problems/<id>/status`、`/lint` 和 `/report` 将读取限定到经过验证的题目 ID。`POST /probhub/api/context?sessionId=...&problemId=...` 会根据当前工作区校验选中的题目，并把有界的 report/status 摘要绑定到 live Agent 的 scoped prompt context；下一次模型请求会通过 Harness 的持久运行时上下文收到这份摘要。`GET /probhub/api/health` 报告共享 subprocess 能力是否挂载。未知路由、不支持的方法、缺失会话、不可访问 cwd 和缺少 Schema v1 工作区均以结构化 JSON fail closed。可选的 `@deepseek-ai/dsh-host-probhub/tools` Consumer 还提供面向模型的验证、交付和只读操作：所有操作从当前 Session 派生工作区并调用 Core 的 `--json` CLI；写任务要求调用者已经获准使用 `workspace-write`，只读查询使用现有只读策略。`probhub_build` 还要求 `confirm: true` 和标准 DSH approval 通道，因为它会发布正式 PDF、ZIP、metadata 与 Manifest。任意路径、`--against` 和 `--fixate` 均不可用。Report 只保留题目元数据、测试点计数、数据组职责、累计约束、校准和 QA 状态，以及不含源码路径和 evidence 正文的有界诊断。
 
 Core 执行使用共享 `SubprocessRuntime`、调用者已经获准的 `workspace-write` `sandboxPolicy`/`sandbox` 隔离、有界收集输出和进程树终止；缺少任一 sandbox 服务时以 `sandbox_unavailable` fail closed。插件卸载时通过 Cordis effect 移除所有路由。
 
@@ -48,6 +48,7 @@ Consumer 挂载期间增加固定的工具 schema 和一段简短系统提示；
 
 - **传输会话选择器** — 浏览器提供不透明 session id；Host 针对 Harness 自有会话状态验证它，绝不将其作为路径或 cwd。
 - **有界投影** — 面向模型的查询和 job 输出保留状态、revision、generation、批次和验证摘要，但省略绝对路径、源码细节、secret 与完整 Manifest。
+- **选题上下文** — 工作台会把经过校验的一份题目摘要绑定到 live Agent 的 scoped prompt context；下一次模型请求通过持久运行时上下文收到它，并可用 `probhub_report` 刷新。
 - **正式发布** — `probhub_build` 是唯一发布正式生成物的工具，必须提供 `confirm: true` 并通过标准 DSH approval；锁、封存、事务和回滚仍由 Core 负责。
 - **ZIP 路径安全** — `probhub_verify_package` 只接受题目 ID。Host 从规范工作区派生 `<canonical workspace>/<problem_id>.zip`，拒绝缺失、非普通文件和链接后再调用 Core。
 - **需要 workspace-write** — 验证任务要求调用者当前 Session 策略已经是 `workspace-write`；适配器不会静默提升只读会话，也不会绕过共享 approval 流程。

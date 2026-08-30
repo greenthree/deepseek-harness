@@ -43,7 +43,9 @@ describe('ProbHub workbench report projection', () => {
     expect(screen.getByText('4')).toBeTruthy()
     expect(screen.getByRole('complementary', { name: 'AI 副驾驶' }).textContent).toContain('题目验证上下文')
 
-    await act(async () => { screen.getByRole('button', { name: '健康与评测' }).click() })
+    await act(async () => { screen.getByRole('button', { name: '查看健康' }).click() })
+    expect(screen.getByRole('button', { name: '健康与评测' }).getAttribute('aria-selected')).toBe('true')
+
     expect(screen.getByText('健康摘要')).toBeTruthy()
     expect(screen.getByText('Judge QA')).toBeTruthy()
     expect(screen.getByText('matched')).toBeTruthy()

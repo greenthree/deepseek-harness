@@ -189,6 +189,10 @@ export function ProbHubWorkbench({ sessionId, children }: { sessionId?: string |
           <span>题目验证上下文</span>
           <strong>{selectedReport.aggregateConstraints?.state ?? '约束待检查'} · {selectedReport.judgeQa?.state ?? 'QA 未配置'}</strong>
           <small>数据组 {selectedReport.groups?.length ?? 0} · 测试点 {selectedReport.tests?.total?.cases ?? '—'} · 校准 {selectedReport.calibration?.state ?? 'missing'}</small>
+          <div className={css.copilotLinks} aria-label="副驾驶定位">
+            <button type="button" data-target-tab="健康与评测" onClick={() => { setTab('健康与评测') }}>查看健康</button>
+            <button type="button" data-target-tab="题面" onClick={() => { setTab('题面') }}>查看题面</button>
+          </div>
         </div>}
         <div className={css.conversationSlot}>
           {children ?? <div className={css.emptyConversation}>当前 Session 尚无 AI 消息。选择题目只改变上下文，不会创建或修改会话。</div>}

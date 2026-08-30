@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as probhub from '../src/index.ts'
-import { type Config, PROBHUB_PATH } from '../src/index.ts'
+import { type Config, PROBHUB_API_PATH, PROBHUB_PATH } from '../src/index.ts'
 
 const { apply } = probhub
 
@@ -184,6 +184,57 @@ describe('host ProbHub bridge', () => {
       })
       expect(JSON.stringify(payload)).not.toContain(root)
       expect(JSON.stringify(payload)).not.toContain('private detail')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('binds a validated problem selection to the live Agent prompt context', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-context-'))
+    mkdirSync(join(root, '.probhub'))
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: []\n')
+    try {
+      const { ctx, route } = await mount()
+      const sessionId = 'context-session'
+      const attached = { id: sessionId, header: { cwd: root } }
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
+      let captured = ''
+      const agent = {
+        id: sessionId,
+        ctx: { systemPrompt: { context: (value: { text: string }) => { captured = value.text; return () => {} } } },
+      }
+      ctx.provide('agents', { get: (id: string) => id === sessionId ? agent : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      ctx.provide('subprocess', {
+        spawn: (spec: SpawnSpec) => {
+          const operation = spec.argv[spec.argv.indexOf('--json') + 1]
+          const value = operation === 'status'
+            ? { ok: true, problems: { A01: { revision_id: 'rev-1', generation_id: 'gen-1' } } }
+            : {
+              ok: true,
+              problems: [{ id: 'A01', name: 'Example', difficulty: 3, tests: { total: { cases: 4 } }, judge_qa: { state: 'passed' } }],
+            }
+          const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+      const { response: res, body } = response()
+      await route.handler({ method: 'POST', url: `${PROBHUB_API_PATH}/context?sessionId=${sessionId}&problemId=A01&selection=2` }, res)
+      expect(res.status).toBe(200)
+      expect(JSON.parse(body())).toMatchObject({ ok: true, problem: { id: 'A01', revision: 'rev-1', generation: 'gen-1' } })
+      expect(captured).toContain('problem: A01')
+      expect(captured).toContain('revision: rev-1')
+      expect(captured).toContain('generation: gen-1')
+      expect(captured).toContain('judgeQa')
+      const stale = response()
+      await route.handler({ method: 'POST', url: `${PROBHUB_API_PATH}/context?sessionId=${sessionId}&problemId=A01&selection=1` }, stale.response)
+      expect(stale.response.status).toBe(409)
+      expect(JSON.parse(stale.body())).toMatchObject({ ok: false, code: 'selection_stale' })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

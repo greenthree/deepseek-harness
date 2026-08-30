@@ -14,15 +14,19 @@ let snapshot: ProbHubOverview = empty
 let selectedId: string | undefined
 let sessionId: string | undefined
 let request: AbortController | undefined
+let contextRequest: AbortController | undefined
 let generation = 0
+let selectionSequence = 0
 const listeners = new Set<() => void>()
 const emit = (): void => { for (const listener of listeners) listener() }
 let state: ProbHubControllerState
 
 const select = (id: string): void => {
+  const sequence = ++selectionSequence
   selectedId = id
   state = { snapshot, selectedId, sessionId, select }
   emit()
+  void publishSelection(sessionId, snapshot, id, sequence)
 }
 
 state = { snapshot, selectedId, sessionId, select }
@@ -36,9 +40,12 @@ const subscribe = (listener: () => void): (() => void) => {
 const refresh = async (nextSession: string | undefined): Promise<void> => {
   request?.abort()
   request = undefined
+  contextRequest?.abort()
+  contextRequest = undefined
   const token = ++generation
   sessionId = nextSession
   selectedId = undefined
+  selectionSequence += 1
   snapshot = empty
   state = { snapshot, selectedId, sessionId, select }
   emit()
@@ -66,6 +73,34 @@ const refresh = async (nextSession: string | undefined): Promise<void> => {
   selectedId = snapshot.selectedId ?? snapshot.problems?.[0]?.id
   state = { snapshot, selectedId, sessionId, select }
   emit()
+  if (selectedId !== undefined) void publishSelection(sessionId, snapshot, selectedId, selectionSequence)
+}
+
+/**
+ * Bind the browser's selected problem to the current Host Agent context.
+ * Navigation remains optimistic and read-only; failures are intentionally
+ * ignored because the workbench can still render its local projection while
+ * the next model request falls back to the normal ProbHub tools.
+ */
+async function publishSelection(
+  currentSession: string | undefined,
+  overview: ProbHubOverview,
+  problemId: string,
+  sequence: number,
+): Promise<void> {
+  if (currentSession === undefined || overview.state !== 'ready') return
+  const problem = overview.problems?.find(item => item.id === problemId)
+  if (problem === undefined) return
+  contextRequest?.abort()
+  const controller = new AbortController()
+  contextRequest = controller
+  const params = new URLSearchParams({ sessionId: currentSession, problemId, selection: String(sequence) })
+  await fetch(`/probhub/api/context?${params.toString()}`, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+    signal: controller.signal,
+  }).catch(() => undefined)
+  if (contextRequest === controller) contextRequest = undefined
 }
 
 /** Shared read-only controller projection used by the layout and sidebar seats. */

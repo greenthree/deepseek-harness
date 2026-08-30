@@ -32,6 +32,19 @@ describe('ProbHub sidebar section', () => {
     expect(probHubController.getSnapshot().selectedId).toBe('A01')
   })
 
+  it('publishes the selected problem context through the Host route', async () => {
+    await act(async () => { await probHubController.refresh('session-a') })
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockClear()
+    probHubController.select('A01')
+    await act(async () => { await new Promise<void>(resolve => setTimeout(resolve, 0)) })
+    const contextCall = fetchMock.mock.calls.find(([url, init]) => (
+      String(url).includes('/probhub/api/context?') && init?.method === 'POST'
+    ))
+    expect(contextCall?.[0]).toContain('sessionId=session-a')
+    expect(contextCall?.[0]).toContain('problemId=A01')
+  })
+
   it('drops an older Session response when a newer Session wins', async () => {
     let resolveA!: (value: Response) => void
     let resolveB!: (value: Response) => void

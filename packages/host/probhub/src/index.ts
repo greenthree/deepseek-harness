@@ -18,6 +18,8 @@ import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import z from '@deepseek-ai/schemastery'
 import type { JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs'
+import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-system-prompt'
 
 /** Core command configuration for the bridge. */
 export interface Config {
@@ -70,6 +72,8 @@ interface ProblemSummary {
   readonly id: string
   readonly status?: string
   readonly lintOk?: boolean
+  readonly revision?: string
+  readonly generation?: string
 }
 interface WorkspaceView {
   readonly workspaceId: string
@@ -84,6 +88,7 @@ interface BridgeResponse {
   readonly status?: unknown
   readonly lint?: unknown
   readonly report?: unknown
+  readonly problem?: { readonly id: string; readonly revision?: string; readonly generation?: string }
   readonly code?: string
   readonly error?: string
 }
@@ -94,6 +99,13 @@ interface SessionRef {
   readonly session?: Session
 }
 
+interface ProblemSelection {
+  readonly sequence: number
+  readonly dispose: () => void
+}
+
+const PROBLEM_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
 /** Registers the `/probhub` read-only route family. */
 export function apply(ctx: Context, config: Config = {}): void {
   const resolved: Config = {
@@ -101,12 +113,27 @@ export function apply(ctx: Context, config: Config = {}): void {
     maxOutputBytes: config.maxOutputBytes ?? 1024 * 1024,
     timeoutMs: config.timeoutMs ?? 15_000,
   }
+  const selections = new Map<string, ProblemSelection>()
+  const latestSelections = new Map<string, number>()
   const route: WebRoute = {
     kind: 'prefix',
     path: PROBHUB_PATH,
-    handler: async (req, res) => handleRequest(ctx, resolved, req, res),
+    handler: async (req, res) => handleRequest(ctx, resolved, req, res, selections, latestSelections),
   }
-  ctx.effect(() => ctx.webServer.register(route), 'probhub: read-only routes')
+  ctx.effect(() => {
+    const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
+      selections.get(agent.id)?.dispose()
+      selections.delete(agent.id)
+    })
+    const disposeRoute = ctx.webServer.register(route)
+    return () => {
+      offDisposed()
+      for (const selection of selections.values()) selection.dispose()
+      selections.clear()
+      latestSelections.clear()
+      disposeRoute()
+    }
+  }, 'probhub: read-only routes')
 }
 
 /** Stable plugin name for profile composition. */
@@ -114,12 +141,21 @@ export const name = 'host-probhub'
 /** This plugin only needs the HTTP carrier; optional services are checked per request. */
 export const inject = ['webServer']
 
-async function handleRequest(ctx: Context, config: Config, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    json(res, 405, { ok: false, state: 'error', code: 'method_not_allowed', error: 'GET is required' })
+async function handleRequest(
+  ctx: Context,
+  config: Config,
+  req: IncomingMessage,
+  res: ServerResponse,
+  selections: Map<string, ProblemSelection>,
+  latestSelections: Map<string, number>,
+): Promise<void> {
+  const url = new URL(req.url ?? '/', 'http://localhost')
+  const isContextRoute = url.pathname === `${PROBHUB_API_PATH}/context`
+  const allowed = isContextRoute ? req.method === 'POST' : req.method === 'GET' || req.method === 'HEAD'
+  if (!allowed) {
+    json(res, 405, { ok: false, state: 'error', code: 'method_not_allowed', error: isContextRoute ? 'POST is required' : 'GET is required' })
     return
   }
-  const url = new URL(req.url ?? '/', 'http://localhost')
   if (url.pathname === PROBHUB_PATH || url.pathname === `${PROBHUB_PATH}/`) {
     json(res, 200, { ok: true, state: 'ready' })
     return
@@ -159,6 +195,10 @@ async function handleRequest(ctx: Context, config: Config, req: IncomingMessage,
     json(res, 400, { ok: false, state: 'error', code: workspace.code, error: workspace.error })
     return
   }
+  if (isContextRoute) {
+    await bindProblemSelection(ctx, config, res, workspace.value, session, selections, latestSelections, url)
+    return
+  }
   const operation = url.pathname.slice(`${PROBHUB_API_PATH}/`.length)
   if (operation !== 'overview' && operation !== 'status' && operation !== 'lint') {
     const problemMatch = /^problems\/([^/]+)\/(status|lint|report)$/.exec(operation)
@@ -196,6 +236,130 @@ async function handleRequest(ctx: Context, config: Config, req: IncomingMessage,
     ...(adapterOk ? {} : { code: status?.error ?? lint?.error ?? 'core_failed' }),
   }
   json(res, body.state === 'migration_required' ? 409 : adapterOk ? 200 : 502, body)
+}
+
+/**
+ * Bind one validated problem selection to the live Agent's scoped prompt
+ * context. The browser sends navigation state only; Core report and status
+ * remain authoritative for the model-visible summary.
+ */
+async function bindProblemSelection(
+  ctx: Context,
+  config: Config,
+  res: ServerResponse,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  selections: Map<string, ProblemSelection>,
+  latestSelections: Map<string, number>,
+  url: URL,
+): Promise<void> {
+  const problemId = url.searchParams.get('problemId')
+  if (problemId === null || !PROBLEM_ID.test(problemId)) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
+    return
+  }
+  const rawSequence = url.searchParams.get('selection')
+  const sequence = rawSequence === null ? undefined : Number(rawSequence)
+  if (sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 1) {
+    json(res, 400, { ok: false, state: 'error', code: 'selection_invalid', error: 'a positive selection sequence is required' })
+    return
+  }
+  const latest = latestSelections.get(session.id)
+  if (latest !== undefined && sequence < latest) {
+    json(res, 409, { ok: false, state: 'error', code: 'selection_stale', error: 'the selected problem request is older than the current selection' })
+    return
+  }
+  const agents = ctx.get('agents')
+  const agent = agents?.get(session.id)
+  if (agent === undefined) {
+    json(res, 409, { ok: false, state: 'error', code: 'session_not_live', error: 'the selected Session has no live Agent' })
+    return
+  }
+  let prompt: typeof agent.ctx.systemPrompt | undefined
+  try { prompt = agent.ctx.systemPrompt } catch { prompt = undefined }
+  if (prompt === undefined) {
+    json(res, 503, { ok: false, state: 'error', code: 'prompt_context_unavailable', error: 'Agent prompt context is unavailable' })
+    return
+  }
+  latestSelections.set(session.id, sequence)
+  const [report, status] = await Promise.all([
+    runCore(ctx, config, workspace.cwd, 'report', [], session.session),
+    runCore(ctx, config, workspace.cwd, 'status', [], session.session),
+  ])
+  if (!report.adapterOk || !report.coreOk) {
+    json(res, 502, { ok: false, state: 'error', code: report.error ?? 'core_failed', error: 'ProbHub report is unavailable' })
+    return
+  }
+  if (latestSelections.get(session.id) !== sequence) {
+    json(res, 409, { ok: false, state: 'error', code: 'selection_stale', error: 'the selected problem request is older than the current selection' })
+    return
+  }
+  const projectedReport = projectReport(report.value)
+  const problems = Array.isArray(projectedReport.problems) ? projectedReport.problems : []
+  const row = problems.find((item): item is Record<string, unknown> => isRecord(item) && item.id === problemId)
+  if (row === undefined) {
+    json(res, 404, { ok: false, state: 'error', code: 'problem_not_found', error: 'the problem is not present in the current workspace' })
+    return
+  }
+  const identity = problemIdentity(status.value, problemId)
+  const text = renderProblemSelection(workspace, row, identity)
+  selections.get(session.id)?.dispose()
+  const dispose = prompt.context({
+    name: 'probhub:selected-problem',
+    order: 205,
+    text,
+  })
+  selections.set(session.id, { sequence, dispose })
+  json(res, 200, {
+    ok: true,
+    state: 'ready',
+    workspace: publicWorkspace(workspace),
+    problem: {
+      id: problemId,
+      ...(identity.revision === undefined ? {} : { revision: identity.revision }),
+      ...(identity.generation === undefined ? {} : { generation: identity.generation }),
+    },
+  })
+}
+
+function renderProblemSelection(
+  workspace: ResolvedWorkspace,
+  problem: Record<string, unknown>,
+  identity: { revision?: string; generation?: string },
+): string {
+  const summary: Record<string, unknown> = {}
+  for (const key of ['id', 'name', 'difficulty', 'tags', 'limits', 'tests', 'groups', 'aggregateConstraints', 'calibration', 'judgeQa', 'mutation', 'killMatrix'] as const) {
+    if (problem[key] !== undefined) summary[key] = problem[key]
+  }
+  const reportSummary = JSON.stringify(summary).slice(0, 6_000)
+  const lines = [
+    'ProbHub 当前题目上下文（由工作台选择，下一次请求可用）：',
+    `workspace: ${workspace.workspaceId}`,
+    `problem: ${String(problem.id)}`,
+    identity.revision === undefined ? 'revision: unavailable' : `revision: ${identity.revision}`,
+    identity.generation === undefined ? 'generation: unavailable' : `generation: ${identity.generation}`,
+    `report: ${reportSummary}`,
+    '这是受限导航摘要；需要最新状态时使用 probhub_report 只读工具确认。',
+  ]
+  return lines.join('\n')
+}
+
+function problemIdentity(value: unknown, problemId: string): { revision?: string; generation?: string } {
+  if (!isRecord(value) || !isRecord(value.problems)) return {}
+  const raw = value.problems[problemId]
+  if (!isRecord(raw)) return {}
+  const manifest = isRecord(raw.manifest) ? raw.manifest : undefined
+  const revision = safeMarker(raw.sealed_revision_id)
+    ?? safeMarker(manifest?.sealed_revision_id)
+    ?? safeMarker(raw.revision_id)
+    ?? safeMarker(manifest?.revision_id)
+    ?? safeMarker(raw.source_hash)
+    ?? safeMarker(manifest?.source_hash)
+  const generation = safeMarker(raw.generation_id)
+    ?? safeMarker(manifest?.generation_id)
+    ?? safeMarker(raw.batch_id)
+    ?? safeMarker(manifest?.batch_id)
+  return { ...(revision === undefined ? {} : { revision }), ...(generation === undefined ? {} : { generation }) }
 }
 
 async function runProblemOperation(
@@ -894,7 +1058,13 @@ function summarizeProblems(status: unknown, lint: unknown): ProblemSummary[] {
   const statusProblems = isRecord(status) && isRecord(status.problems) ? status.problems : undefined
   if (statusProblems !== undefined) for (const [id, item] of Object.entries(statusProblems).slice(0, 256)) {
     const state = isRecord(item) && typeof item.state === 'string' ? item.state : undefined
-    rows.set(id, state === undefined ? { id } : { id, status: state })
+    const identity = problemIdentity(status, id)
+    rows.set(id, {
+      id,
+      ...(state === undefined ? {} : { status: state }),
+      ...(identity.revision === undefined ? {} : { revision: identity.revision }),
+      ...(identity.generation === undefined ? {} : { generation: identity.generation }),
+    })
   }
   const lintProblems = Array.isArray(lint) ? lint : isRecord(lint) && Array.isArray(lint.problems) ? lint.problems : []
   for (const item of lintProblems.slice(0, 256)) {
