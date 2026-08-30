@@ -304,11 +304,17 @@ async function bindProblemSelection(
   const identity = problemIdentity(status.value, problemId)
   const text = renderProblemSelection(workspace, row, identity)
   selections.get(session.id)?.dispose()
-  const dispose = prompt.context({
-    name: 'probhub:selected-problem',
-    order: 205,
-    text,
-  })
+  let dispose: () => void
+  try {
+    dispose = prompt.context({
+      name: 'probhub:selected-problem',
+      order: 205,
+      text,
+    })
+  } catch {
+    json(res, 503, { ok: false, state: 'error', code: 'prompt_context_unavailable', error: 'Agent prompt context is unavailable' })
+    return
+  }
   selections.set(session.id, { sequence, dispose })
   json(res, 200, {
     ok: true,
