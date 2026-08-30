@@ -60,6 +60,20 @@ export interface ProbHubDeliveryJob {
   readonly problemId?: string
 }
 
+/** Read-only formal delivery gate projection returned by the Host. */
+export interface ProbHubDeliveryGate {
+  readonly ok: boolean
+  readonly state: 'ready' | 'blocked' | 'error'
+  readonly problemIds: readonly string[]
+  readonly checks: {
+    readonly revision: Record<string, unknown>
+    readonly generation: Record<string, unknown>
+    readonly packages: Record<string, Record<string, unknown>>
+  }
+  readonly blockers: readonly { readonly code: string; readonly problemId?: string; readonly detail?: string }[]
+  readonly report?: Record<string, unknown>
+}
+
 function parseSourceImpact(value: unknown): ProbHubSourceDocument['impact'] | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const impact = value as Record<string, unknown>
@@ -226,6 +240,59 @@ export async function startProbHubDeliveryJob(
     return { error: { code: 'job_invalid_response', message: '任务服务返回了不完整 job 响应' } }
   }
   return { job: { id: record.id, operation, ...(record.problemId === undefined ? {} : { problemId: record.problemId }) } }
+}
+
+/** Read the formal publication prerequisites for one or more current problems. */
+export async function checkProbHubDelivery(
+  currentSession: string,
+  problemIds: readonly string[],
+): Promise<{ readonly delivery?: ProbHubDeliveryGate; readonly error?: ProbHubSourceError }> {
+  if (problemIds.length === 0 || problemIds.length > 256 || problemIds.some(id => id.length === 0)) {
+    return { error: { code: 'problem_invalid', message: '请选择至少一道有效题目' } }
+  }
+  const params = new URLSearchParams({ sessionId: currentSession, problemIds: problemIds.join(',') })
+  const response = await fetch(`/probhub/api/delivery-check?${params.toString()}`, { headers: { accept: 'application/json' } }).catch(() => undefined)
+  if (response === undefined) return { error: { code: 'delivery_unavailable', message: '无法连接 ProbHub 交付门禁' } }
+  let body: unknown
+  try { body = await response.json() } catch { return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了无效响应' } } }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了无效结果' } }
+  const value = body as Record<string, unknown>
+  const delivery = value.delivery
+  if (delivery === null || typeof delivery !== 'object' || Array.isArray(delivery)) {
+    return { error: { code: typeof value.code === 'string' ? value.code : 'delivery_invalid_response', message: typeof value.error === 'string' ? value.error : '交付门禁缺少结果' } }
+  }
+  const gate = delivery as Record<string, unknown>
+  if (typeof gate.ok !== 'boolean' || (gate.state !== 'ready' && gate.state !== 'blocked' && gate.state !== 'error')) {
+    return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了不完整结果' } }
+  }
+  const blockers = gate.blockers
+  if (!Array.isArray(blockers) || blockers.length > 256) return { error: { code: 'delivery_invalid_response', message: '交付门禁缺少阻断原因' } }
+  const parsedBlockers = blockers.flatMap((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return []
+    const record = item as Record<string, unknown>
+    if (typeof record.code !== 'string') return []
+    return [{
+      code: record.code,
+      ...(typeof record.problemId === 'string' ? { problemId: record.problemId } : {}),
+      ...(typeof record.detail === 'string' ? { detail: record.detail } : {}),
+    }]
+  })
+  if (parsedBlockers.length !== blockers.length) return { error: { code: 'delivery_invalid_response', message: '交付门禁包含无效阻断原因' } }
+  const checks = gate.checks
+  if (checks === null || typeof checks !== 'object' || Array.isArray(checks)) return { error: { code: 'delivery_invalid_response', message: '交付门禁缺少检查结果' } }
+  const rawIds = gate.problemIds
+  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 256 || rawIds.some(id => typeof id !== 'string' || id.length === 0)) {
+    return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了无效题目列表' } }
+  }
+  const parsed: ProbHubDeliveryGate = {
+    ok: gate.ok,
+    state: gate.state,
+    problemIds: rawIds,
+    checks: checks as ProbHubDeliveryGate['checks'],
+    blockers: parsedBlockers,
+    ...(value.delivery && typeof value.delivery === 'object' && 'report' in value.delivery ? { report: (value.delivery as Record<string, unknown>).report as Record<string, unknown> } : {}),
+  }
+  return { delivery: parsed }
 }
 
 /** Cancel one current-Session ProbHub Job through the Host bridge. */

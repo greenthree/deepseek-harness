@@ -131,6 +131,45 @@ describe('ProbHub workbench report projection', () => {
     expect(screen.getByText('隔离 preview generation')).toBeTruthy()
   })
 
+  it('renders concrete formal-delivery blockers returned by the Host gate', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/probhub/api/delivery-check')) {
+        return new Response(JSON.stringify({
+          ok: false,
+          state: 'ready',
+          delivery: {
+            ok: false,
+            state: 'blocked',
+            problemIds: ['A01'],
+            checks: {
+              revision: { A01: { consistent: false } },
+              generation: { state: 'draft', complete: false, allSealed: false, missing: ['A01'] },
+              packages: { A01: { state: 'missing', ok: false } },
+            },
+            blockers: [
+              { code: 'generation_incomplete' },
+              { code: 'sealed_revision_invalid', problemId: 'A01' },
+            ],
+          },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({
+        state: 'ready', workspaceId: 'workspace-a',
+        problems: [{ id: 'A01', title: 'Alpha', status: 'current', revision: 'a'.repeat(64) }],
+      }), { status: 200 })
+    })
+    await act(async () => { await probHubController.refresh('session-a') })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessionsWithJobs()} />)
+    await act(async () => { screen.getByRole('button', { name: '健康与评测' }).click() })
+    await act(async () => { screen.getByRole('button', { name: '检查正式交付' }).click() })
+    const blockers = await screen.findByRole('list', { name: '正式交付阻断原因' })
+    expect(blockers.textContent).toContain('预览 generation 未完成')
+    expect(blockers.textContent).toContain('sealed revision 无效 · A01')
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/delivery-check'))).toBe(true)
+  })
+
   it('cancels a running ProbHub job from the health task list', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockImplementation(async (input) => {

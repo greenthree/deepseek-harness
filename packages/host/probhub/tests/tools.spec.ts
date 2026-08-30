@@ -199,6 +199,7 @@ describe('ProbHub background tools', () => {
       'probhub_generation_status',
       'probhub_report',
       'probhub_verify_package',
+      'probhub_delivery_check',
     ]) expect(ctx.tools.get(name)).toBeDefined()
 
     const status = await ctx.tools.execute({
@@ -252,7 +253,26 @@ describe('ProbHub background tools', () => {
   })
 
   it('starts a confirmed build only after the normal approval seam allows it', async () => {
-    const { ctx, agent, spawned } = await setup(undefined, 'workspace-write')
+    const gateOutput = JSON.stringify({
+      ok: true,
+      problems: {
+        A01: { state: 'stale', source_hash: 'source-a', data_hash: 'data-a' },
+        B02: { state: 'stale', source_hash: 'source-b', data_hash: 'data-b' },
+      },
+      generation_id: 'gen-1',
+      state: 'sealed-preview',
+      manifest: {
+        complete: true,
+        all_sealed: true,
+        missing: [],
+        problems: [
+          { problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' },
+          { problem_id: 'B02', state: 'sealed', revision_id: 'sealed-b', source_hash: 'source-b', data_hash: 'data-b' },
+        ],
+      },
+      verification: { ok: true },
+    })
+    const { ctx, agent, spawned } = await setup(gateOutput, 'workspace-write', true)
     ctx.provide('approval', { request: async () => 'allowed-once' } as never)
     const result = await ctx.tools.execute({
       signal: new AbortController().signal,
@@ -263,8 +283,8 @@ describe('ProbHub background tools', () => {
     })
     expect(result.isError).toBe(false)
     expect(result.value).toMatchObject({ kind: 'background', jobId: 'probhub-1' })
-    expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--json', 'build', 'A01', 'B02']))
-    spawned[0]!.finish!({ exitCode: 0, signal: null })
+    expect(spawned.at(-1)?.argv).toEqual(expect.arrayContaining(['--json', 'build', 'A01', 'B02']))
+    spawned.at(-1)!.finish!({ exitCode: 0, signal: null })
     await expect(ctx.jobs.wait('probhub-1' as never, 1000, agent)).resolves.toMatchObject({ status: 'completed' })
   })
 
@@ -318,6 +338,32 @@ describe('ProbHub background tools', () => {
     expect(verify.value).toMatchObject({ verification_scope: 'deep', stats: { sample_cases: 3, secret_cases: 7, files: 12 } })
     expect(JSON.stringify(verify.value)).not.toContain('C:/private')
     expect(spawned).toHaveLength(2)
+  })
+
+  it('exposes the formal delivery gate as a bounded read-only tool', async () => {
+    const output = JSON.stringify({
+      ok: true,
+      problems: { A01: { state: 'stale', source_hash: 'source-a', data_hash: 'data-a' } },
+      generation_id: 'gen-1',
+      state: 'sealed-preview',
+      manifest: {
+        complete: true,
+        all_sealed: true,
+        missing: [],
+        problems: [{ problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' }],
+      },
+    })
+    const { ctx, agent } = await setup(output, 'workspace-write', true)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('delivery-check'),
+      name: 'probhub_delivery_check',
+      arguments: { problem_ids: ['A01'] },
+      agent,
+    })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ ok: true, state: 'ready', problemIds: ['A01'] })
+    expect(JSON.stringify(result.value)).not.toContain('C:/')
   })
 
   it('rejects a missing generated package before starting Core', async () => {

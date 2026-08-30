@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProbHubWorkbench.module.css'
-import { cancelProbHubJob, checkProbHubPreview, listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
+import { cancelProbHubJob, checkProbHubDelivery, checkProbHubPreview, listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryGate, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
 
 /** Read-only projection returned by the Harness ProbHub prefix route. */
 export interface ProbHubProblem {
@@ -144,6 +144,29 @@ function deliveryOperationLabel(operation: ProbHubDeliveryOperation): string {
   return '组装预览'
 }
 
+function deliveryBlockerLabel(code: string): string {
+  const labels: Record<string, string> = {
+    generation_invalid: '预览 generation 无效',
+    generation_incomplete: '预览 generation 未完成',
+    generation_not_sealed: '仍有题目未 Seal',
+    generation_missing: 'generation 缺少题目',
+    generation_problem_missing: '当前题目不在 generation 中',
+    status_problem_missing: '当前题目状态缺失',
+    status_unavailable: 'Core status 不可用',
+    report_problem_missing: 'Core report 缺少当前题目',
+    sealed_revision_invalid: 'sealed revision 无效',
+    sealed_revision_missing: '缺少 sealed revision',
+    revision_mismatch: 'source/data 与 sealed revision 不一致',
+    package_verify_failed: '正式 ZIP 验证失败',
+    package_verify_unavailable: '正式 ZIP 验证不可用',
+    package_invalid: '正式 ZIP 路径无效',
+    report_failed: 'Core report 未通过',
+    report_unavailable: 'Core report 不可用',
+    generation_unavailable: 'Core generation 状态不可用',
+  }
+  return labels[code] ?? code
+}
+
 function latestOperationJob(jobs: readonly JobView[], operation: ProbHubDeliveryOperation, problemId: string): JobView | undefined {
   const label = operation === 'assemble' ? 'assemble' : `${operation} ${problemId}`
   return jobs.filter(job => job.label === label).at(-1)
@@ -189,6 +212,9 @@ function WorkbenchBody({
   deliveryBusy,
   deliveryError,
   deliveryMessage,
+  deliveryGate,
+  deliveryGateError,
+  onCheckDelivery,
   onStartDelivery,
   cancelBusy,
   onCancelJob,
@@ -209,6 +235,9 @@ function WorkbenchBody({
   deliveryBusy: ProbHubDeliveryOperation | undefined
   deliveryError: string | undefined
   deliveryMessage: string | undefined
+  deliveryGate: ProbHubDeliveryGate | undefined
+  deliveryGateError: string | undefined
+  onCheckDelivery: () => void
   onStartDelivery: (operation: ProbHubDeliveryOperation) => void
   cancelBusy: string | undefined
   onCancelJob: (jobId: string) => void
@@ -269,6 +298,7 @@ function WorkbenchBody({
   }
   if (tab === '健康与评测') {
     if (problem.status === undefined && report === undefined && jobs.length === 0) return <StateNotice overview={EMPTY_OVERVIEW} />
+    const anyJobRunning = jobs.some(isLiveJob)
     return (
       <div className={css.previewStack}>
         <section className={css.deliveryCard} aria-label="ProbHub 交付清单">
@@ -282,7 +312,7 @@ function WorkbenchBody({
             <li><span>Judge QA</span><strong data-state={report?.judgeQa?.state}>{deliveryStatus(report?.judgeQa?.state)}</strong></li>
             <li><span>校准</span><strong data-state={report?.calibration?.state}>{deliveryStatus(report?.calibration?.state)}</strong></li>
             <li><span>预览 generation</span><strong data-state={problem.generation === undefined ? 'missing' : 'available'}>{problem.generation === undefined ? '未组装' : 'available'}</strong></li>
-            <li><span>正式交付</span><strong data-state="manual">需显式 Build</strong></li>
+            <li><span>正式交付</span><strong data-state={deliveryGate === undefined ? 'manual' : deliveryGate.ok ? 'passed' : deliveryGate.state === 'error' ? 'failed' : 'blocked'}>{deliveryGate === undefined ? '待检查' : deliveryGate.ok ? '可交付' : deliveryGate.state === 'error' ? '检查失败' : '被阻断'}</strong></li>
           </ul>
           <div className={css.deliveryActions}>
             {(['judge', 'stress', 'judge-qa', 'mutation', 'checkpoint', 'seal', 'assemble'] as const).map((operation) => {
@@ -292,6 +322,14 @@ function WorkbenchBody({
               return <button key={operation} type="button" onClick={() => { onStartDelivery(operation) }} disabled={deliveryBusy !== undefined || running}>{deliveryBusy === operation ? `${deliveryOperationLabel(operation)}…` : `${deliveryOperationLabel(operation)}${suffix}`}</button>
             })}
           </div>
+          <div className={css.deliveryGateActions}>
+            <button type="button" onClick={onCheckDelivery} disabled={deliveryBusy !== undefined || anyJobRunning}>{deliveryGate === undefined ? '检查正式交付' : '重新检查正式交付'}</button>
+            <small>正式 Build 仍需在副驾驶中显式确认，并通过 DSH approval。</small>
+          </div>
+          {deliveryGateError && <div className={css.editorError} role="alert">{deliveryGateError}</div>}
+          {deliveryGate && !deliveryGate.ok && deliveryGate.blockers.length > 0 && <ul className={css.deliveryBlockers} aria-label="正式交付阻断原因">
+            {deliveryGate.blockers.slice(0, 12).map((blocker, index) => <li key={`${blocker.code}-${blocker.problemId ?? 'workspace'}-${index}`}>{deliveryBlockerLabel(blocker.code)}{blocker.problemId ? ` · ${blocker.problemId}` : ''}</li>)}
+          </ul>}
           {deliveryError && <div className={css.editorError} role="alert">{deliveryError}</div>}
           {deliveryMessage && <div className={css.editorSuccess} role="status">{deliveryMessage}</div>}
         </section>
@@ -374,7 +412,10 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
   const [deliveryBusy, setDeliveryBusy] = useState<ProbHubDeliveryOperation | undefined>()
   const [deliveryError, setDeliveryError] = useState<string | undefined>()
   const [deliveryMessage, setDeliveryMessage] = useState<string | undefined>()
+  const [deliveryGate, setDeliveryGate] = useState<ProbHubDeliveryGate | undefined>()
+  const [deliveryGateError, setDeliveryGateError] = useState<string | undefined>()
   const deliveryRequest = useRef(0)
+  const deliveryGateRequest = useRef(0)
   const [cancelBusy, setCancelBusy] = useState<string | undefined>()
   const cancelRequest = useRef(0)
   const [previewAvailable, setPreviewAvailable] = useState<boolean | undefined>()
@@ -410,6 +451,8 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
       setDeliveryBusy(undefined)
       setDeliveryError(undefined)
       setDeliveryMessage(undefined)
+      setDeliveryGate(undefined)
+      setDeliveryGateError(undefined)
       setCancelBusy(undefined)
       setPreviewAvailable(undefined)
     }
@@ -489,6 +532,8 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     setDeliveryBusy(operation)
     setDeliveryError(undefined)
     setDeliveryMessage(undefined)
+    setDeliveryGate(undefined)
+    setDeliveryGateError(undefined)
     const result = await startProbHubDeliveryJob(
       targetSession,
       operation,
@@ -505,6 +550,21 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     }
     setDeliveryBusy(undefined)
     setDeliveryMessage(`已提交 ${deliveryOperationLabel(operation)} 任务（${result.job.id}），可在健康摘要中查看状态。`)
+  }
+  const checkDelivery = async (): Promise<void> => {
+    if (sessionId === undefined || selected === undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++deliveryGateRequest.current
+    setDeliveryGateError(undefined)
+    const result = await checkProbHubDelivery(targetSession, [targetProblem])
+    if (requestId !== deliveryGateRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
+    if (result.error !== undefined || result.delivery === undefined) {
+      setDeliveryGate(undefined)
+      setDeliveryGateError(result.error?.message ?? '无法读取正式交付门禁')
+      return
+    }
+    setDeliveryGate(result.delivery)
   }
   const cancelJob = async (jobId: string): Promise<void> => {
     if (sessionId === undefined || cancelBusy !== undefined) return
@@ -588,6 +648,9 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
                 deliveryBusy={deliveryBusy}
                 deliveryError={deliveryError}
                 deliveryMessage={deliveryMessage}
+                deliveryGate={deliveryGate}
+                deliveryGateError={deliveryGateError}
+                onCheckDelivery={() => { void checkDelivery() }}
                 onStartDelivery={(operation) => { void startDelivery(operation) }}
                 cancelBusy={cancelBusy}
                 onCancelJob={(jobId) => { void cancelJob(jobId) }}

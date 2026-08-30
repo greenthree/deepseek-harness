@@ -3,7 +3,7 @@
 import { lstat, readFile, realpath, stat } from 'node:fs/promises'
 import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative as relativePath } from 'node:path'
+import { dirname, isAbsolute, join, relative as relativePath } from 'node:path'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -100,7 +100,8 @@ interface WorkspaceView {
   readonly workspaceId: string
   readonly schemaVersion: 1
 }
-interface ResolvedWorkspace extends WorkspaceView { readonly cwd: string }
+/** Canonical Schema v1 workspace exposed to Host helpers. */
+export interface ResolvedWorkspace extends WorkspaceView { readonly cwd: string }
 interface BridgeResponse {
   readonly ok: boolean
   readonly state: State
@@ -119,9 +120,33 @@ interface BridgeResponse {
   readonly currentRevision?: string
   readonly job?: { readonly id: string; readonly operation: CoreOperation; readonly problemId?: string }
   readonly cancelled?: boolean
+  readonly delivery?: DeliveryGate
 }
 
-interface SessionRef {
+/** Bounded read-only result used by the UI and formal-build tool gate. */
+export interface DeliveryGate {
+  readonly ok: boolean
+  readonly state: 'ready' | 'blocked' | 'error'
+  readonly problemIds: readonly string[]
+  readonly checks: {
+    readonly revision: Record<string, unknown>
+    readonly generation: Record<string, unknown>
+    readonly packages: Record<string, Record<string, unknown>>
+  }
+  readonly blockers: readonly { readonly code: string; readonly problemId?: string; readonly detail?: string }[]
+  readonly report?: Record<string, unknown>
+}
+
+interface DeliveryGateProblemRecord {
+  readonly source_hash?: string
+  readonly data_hash?: string
+  readonly state?: string
+  readonly stale_fields?: unknown
+  readonly manifest?: Record<string, unknown>
+}
+
+/** Validated Session identity and optional live Session object. */
+export interface SessionRef {
   readonly id: SessionId
   readonly header: SessionHeader
   readonly session?: Session
@@ -234,6 +259,7 @@ async function handleRequest(
   const isContextRoute = url.pathname === `${PROBHUB_API_PATH}/context`
   const isSourceRoute = url.pathname === `${PROBHUB_API_PATH}/source`
   const isSourceTargetsRoute = url.pathname === `${PROBHUB_API_PATH}/source-targets`
+  const isDeliveryCheckRoute = url.pathname === `${PROBHUB_API_PATH}/delivery-check`
   const isJobRoute = url.pathname === `${PROBHUB_API_PATH}/jobs`
   const isJobCancelRoute = url.pathname === `${PROBHUB_API_PATH}/jobs/cancel`
   const allowed = isContextRoute || (isSourceRoute && req.method === 'POST') || (isJobRoute && req.method === 'POST') || (isJobCancelRoute && req.method === 'POST')
@@ -292,6 +318,10 @@ async function handleRequest(
   }
   if (isSourceTargetsRoute) {
     await handleSourceTargetsRequest(config, res, workspace.value, url)
+    return
+  }
+  if (isDeliveryCheckRoute) {
+    await handleDeliveryCheckRequest(ctx, config, res, workspace.value, session, url)
     return
   }
   const previewMatch = /^problems\/([^/]+)\/preview$/.exec(url.pathname.slice(`${PROBHUB_API_PATH}/`.length))
@@ -853,6 +883,213 @@ async function runProblemOperation(
     [operation]: operation === 'report' ? projectReport(result.value) : projectCore(result.value),
     ...(migration === undefined ? {} : { code: migration }),
     ...(result.error === undefined ? {} : { code: result.error }),
+  })
+}
+
+/** Resolve a formal package path from the canonical workspace without accepting user paths. */
+export async function resolvePackagePath(workspace: string, problemId: string): Promise<string> {
+  if (!PROBLEM_ID.test(problemId)) throw new Error('package_invalid')
+  const path = join(workspace, `${problemId}.zip`)
+  let info
+  try { info = await lstat(path) } catch { throw new Error(`generated package is missing for ${problemId}`) }
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error(`generated package is not a regular file for ${problemId}`)
+  try {
+    const [canonicalWorkspace, canonicalPath] = await Promise.all([realpath(workspace), realpath(path)])
+    if (dirname(canonicalPath) !== canonicalWorkspace) throw new Error('package path escapes the canonical workspace')
+    if (!(await stat(canonicalPath)).isFile()) throw new Error(`generated package is not a regular file for ${problemId}`)
+    return canonicalPath
+  } catch (error) {
+    if (error instanceof Error && (error.message === 'package path escapes the canonical workspace' || error.message.startsWith('generated package is not a regular file'))) throw error
+    throw new Error(`generated package path is not inside the canonical workspace for ${problemId}`)
+  }
+}
+
+function deliveryProblemRecord(value: unknown, problemId: string): DeliveryGateProblemRecord | undefined {
+  if (!isRecord(value) || !isRecord(value.problems)) return undefined
+  const item = value.problems[problemId]
+  if (!isRecord(item)) return undefined
+  return item
+}
+
+function deliveryGenerationProblem(value: unknown, problemId: string): Record<string, unknown> | undefined {
+  if (!isRecord(value) || !isRecord(value.manifest)) return undefined
+  const rawProblems = value.manifest.problems
+  if (!Array.isArray(rawProblems)) return undefined
+  const problems: unknown[] = rawProblems
+  const item = problems.find((entry: unknown) => isRecord(entry) && entry.problem_id === problemId)
+  return isRecord(item) ? item : undefined
+}
+
+function deliveryMarker(value: unknown): string | undefined {
+  return safeMarker(value)
+}
+
+function deliveryBlock(
+  blockers: Array<{ code: string; problemId?: string; detail?: string }>,
+  code: string,
+  problemId?: string,
+  detail?: string,
+): void {
+  if (blockers.length >= 256) return
+  if (blockers.some(item => item.code === code && item.problemId === problemId)) return
+  blockers.push({ code, ...(problemId === undefined ? {} : { problemId }), ...(detail === undefined ? {} : { detail }) })
+}
+
+function projectVerification(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return { ok: false, state: 'invalid' }
+  const result: Record<string, unknown> = { ok: value.ok === true, state: value.ok === true ? 'passed' : 'failed' }
+  for (const key of ['code', 'status', 'verification_scope'] as const) {
+    const marker = deliveryMarker(value[key])
+    if (marker !== undefined) result[key] = marker
+  }
+  for (const key of ['errorCount', 'warningCount', 'fileCount', 'sampleCount', 'secretCount'] as const) {
+    const count = value[key]
+    if (typeof count === 'number' && Number.isFinite(count)) result[key] = Math.max(0, Math.min(1_000_000, Math.trunc(count)))
+  }
+  const verification = isRecord(value.verification) ? value.verification : undefined
+  if (verification !== undefined && typeof verification.ok === 'boolean') result.ok = verification.ok
+  return result
+}
+
+/**
+ * Read and validate the prerequisites for formal Core publication.
+ * Missing existing ZIPs are reported for the UI but do not block the first
+ * build; Core creates and verifies them transactionally during publication.
+ */
+export async function checkDeliveryGate(
+  ctx: Context,
+  config: Config,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  problemIds: readonly string[],
+): Promise<DeliveryGate> {
+  const requestedIds = [...new Set(problemIds)]
+  const blockers: Array<{ code: string; problemId?: string; detail?: string }> = []
+  const checks = {
+    revision: {} as Record<string, unknown>,
+    generation: {} as Record<string, unknown>,
+    packages: {} as Record<string, Record<string, unknown>>,
+  }
+  if (requestedIds.length === 0 || requestedIds.length > 256 || requestedIds.some(id => !PROBLEM_ID.test(id))) {
+    return { ok: false, state: 'blocked', problemIds: requestedIds.slice(0, 256), checks, blockers: [{ code: 'problem_invalid' }] }
+  }
+  const [status, generation, report] = await Promise.all([
+    runCore(ctx, config, workspace.cwd, 'status', [], session.session),
+    runCore(ctx, config, workspace.cwd, 'generation-status', [], session.session),
+    runCore(ctx, config, workspace.cwd, 'report', [], session.session),
+  ])
+  if (!status.adapterOk) deliveryBlock(blockers, 'status_unavailable', undefined, status.error)
+  if (!generation.adapterOk) deliveryBlock(blockers, 'generation_unavailable', undefined, generation.error)
+  if (!report.adapterOk) deliveryBlock(blockers, 'report_unavailable', undefined, report.error)
+
+  const generationValue = isRecord(generation.value) ? generation.value : undefined
+  const generationManifest = generationValue !== undefined && isRecord(generationValue.manifest) ? generationValue.manifest : undefined
+  const generationId = deliveryMarker(generationValue?.generation_id)
+  const generationState = deliveryMarker(generationValue?.state) ?? 'none'
+  const generationMissing = generationManifest !== undefined && Array.isArray(generationManifest.missing)
+    ? generationManifest.missing.slice(0, 256).flatMap((item: unknown) => isRecord(item) && typeof item.problem_id === 'string' ? [item.problem_id] : [])
+    : []
+  checks.generation = {
+    ok: generation.adapterOk && generation.coreOk && generationManifest !== undefined,
+    ...(generationId === undefined ? {} : { generationId }),
+    state: generationState,
+    complete: generationManifest?.complete === true,
+    allSealed: generationManifest?.all_sealed === true,
+    missing: generationMissing,
+  }
+  if (!generation.adapterOk || !generation.coreOk || generationManifest === undefined) deliveryBlock(blockers, 'generation_invalid')
+  else {
+    if (generationState === 'stale' || generationState === 'invalid' || generationState === 'none') deliveryBlock(blockers, 'generation_invalid')
+    if (generationManifest.complete !== true) deliveryBlock(blockers, 'generation_incomplete')
+    if (generationManifest.all_sealed !== true) deliveryBlock(blockers, 'generation_not_sealed')
+    for (const missing of generationMissing) deliveryBlock(blockers, 'generation_missing', missing)
+  }
+
+  const statusValue = isRecord(status.value) ? status.value : undefined
+  const statusProblems = statusValue !== undefined && isRecord(statusValue.problems) ? statusValue.problems : undefined
+  const allIds = statusProblems === undefined
+    ? requestedIds
+    : Object.keys(statusProblems).filter(id => PROBLEM_ID.test(id)).slice(0, 256)
+  for (const id of requestedIds) if (!allIds.includes(id)) deliveryBlock(blockers, 'status_problem_missing', id)
+  if (allIds.length === 0) deliveryBlock(blockers, 'status_unavailable')
+  const reportValue = report.adapterOk && isRecord(report.value) ? projectReport(report.value) : undefined
+  if (reportValue !== undefined && reportValue.ok !== true) deliveryBlock(blockers, 'report_failed')
+  for (const id of allIds) {
+    const current = deliveryProblemRecord(statusValue, id)
+    const staged = deliveryGenerationProblem(generationValue, id)
+    const revision: Record<string, unknown> = {}
+    const sourceHash = deliveryMarker(current?.source_hash)
+    const dataHash = deliveryMarker(current?.data_hash)
+    const stagedSourceHash = deliveryMarker(staged?.source_hash)
+    const stagedDataHash = deliveryMarker(staged?.data_hash)
+    const sealedRevision = deliveryMarker(staged?.revision_id)
+    if (sourceHash !== undefined) revision.sourceHash = sourceHash
+    if (dataHash !== undefined) revision.dataHash = dataHash
+    if (sealedRevision !== undefined) revision.sealedRevision = sealedRevision
+    revision.status = deliveryMarker(current?.state) ?? 'missing'
+    revision.sealed = staged?.state === 'sealed' && sealedRevision !== undefined
+    revision.consistent = sourceHash !== undefined && dataHash !== undefined
+      && stagedSourceHash === sourceHash && stagedDataHash === dataHash
+    checks.revision[id] = revision
+    if (current === undefined) deliveryBlock(blockers, 'status_problem_missing', id)
+    if (staged === undefined) deliveryBlock(blockers, 'generation_problem_missing', id)
+    if (staged !== undefined && staged.state !== 'sealed') deliveryBlock(blockers, 'sealed_revision_invalid', id)
+    if (sealedRevision === undefined) deliveryBlock(blockers, 'sealed_revision_missing', id)
+    if (revision.consistent !== true) deliveryBlock(blockers, 'revision_mismatch', id)
+    const packageResult: Record<string, unknown> = {}
+    if (!requestedIds.includes(id)) continue
+    try {
+      const packageFile = await resolvePackagePath(workspace.cwd, id)
+      const verification = await runCore(ctx, config, workspace.cwd, 'verify-package', [packageFile, '--require-pdf', '--problem', id], session.session)
+      if (!verification.adapterOk) {
+        packageResult.state = 'unavailable'
+        packageResult.ok = false
+        deliveryBlock(blockers, 'package_verify_unavailable', id, verification.error)
+      } else {
+        Object.assign(packageResult, projectVerification(verification.value))
+        if (!verification.coreOk) deliveryBlock(blockers, 'package_verify_failed', id)
+      }
+    } catch (error) {
+      packageResult.state = error instanceof Error && error.message.startsWith('generated package is missing') ? 'missing' : 'invalid'
+      packageResult.ok = false
+      if (packageResult.state === 'invalid') deliveryBlock(blockers, 'package_invalid', id)
+    }
+    checks.packages[id] = packageResult
+  }
+  return {
+    ok: blockers.length === 0,
+    state: blockers.some(item => item.code.endsWith('_unavailable') || item.code === 'generation_invalid' || item.code === 'report_failed') ? 'error' : blockers.length === 0 ? 'ready' : 'blocked',
+    problemIds: allIds,
+    checks,
+    blockers,
+    ...(reportValue === undefined ? {} : { report: reportValue }),
+  }
+}
+
+async function handleDeliveryCheckRequest(
+  ctx: Context,
+  config: Config,
+  res: ServerResponse,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  url: URL,
+): Promise<void> {
+  const raw = url.searchParams.get('problemIds') ?? url.searchParams.get('problemId')
+  if (raw === null) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'problemId or problemIds is required' })
+    return
+  }
+  const ids = raw.split(',').map(item => item.trim()).filter(item => item.length > 0)
+  if (ids.length === 0 || ids.length > 256 || ids.some(id => !PROBLEM_ID.test(id)) || new Set(ids).size !== ids.length) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'problem ids must be distinct valid Schema v1 ids' })
+    return
+  }
+  const gate = await checkDeliveryGate(ctx, config, workspace, session, ids)
+  json(res, gate.state === 'error' ? 502 : 200, {
+    ok: gate.ok,
+    state: gate.state === 'error' ? 'error' : 'ready',
+    workspace: publicWorkspace(workspace),
+    delivery: gate,
   })
 }
 

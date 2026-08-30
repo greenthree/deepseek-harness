@@ -8,6 +8,8 @@ ProbHub Workspace Schema v1 项目的 Host bridge。插件在现有 `webServer` 
 
 Core 执行使用共享 `SubprocessRuntime`、调用者已经获准的 `workspace-write` `sandboxPolicy`/`sandbox` 隔离、有界收集输出和进程树终止；缺少任一 sandbox 服务时以 `sandbox_unavailable` fail closed。插件卸载时通过 Cordis effect 移除所有路由。
 
+只读的 `GET /probhub/api/delivery-check?sessionId=...&problemId=...` 会组合 status、report、预览 generation 完整性、sealed revision 一致性和规范 ZIP 验证，返回正式交付清单的有界阻断码且不会发布文件；正式发布仍只能通过面向模型的 `probhub_build` 工具完成。
+
 ## Model Experience
 
 ### ProbHub 工具
@@ -26,13 +28,13 @@ When @deepseek-ai/dsh-host-probhub/tools is mounted in an agent preset, these op
 | probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation | workspace-write job | Run validation and write Core-managed caches, evidence, or stress diagnostics. |
 | probhub_checkpoint, probhub_seal, probhub_assemble | workspace-write job | Create a checkpoint, seal a problem, or assemble an isolated preview generation. assemble may create a draft checkpoint when one is missing. |
 | probhub_build | workspace-write job + confirm: true + approval | Publish formal PDF, ZIP, metadata, and Manifest artifacts after Core's sealed-revision checks. |
-| probhub_generation_status, probhub_report, probhub_verify_package | read-only query | Return bounded generation, report, or package-verification projections. verify-package derives the ZIP from the canonical workspace and accepts only problem_id. |
+| probhub_generation_status, probhub_report, probhub_verify_package, probhub_delivery_check | read-only query | Return bounded generation, report, package-verification, or formal-delivery-gate projections. The delivery gate lists blocker codes and never publishes artifacts. |
 
 Background tools return a generic job id immediately. Use job_output to collect bounded Core JSON and job_kill to request cancellation. Write jobs are exclusive; read-only queries may overlap.
 
 validation jobs: probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation
 delivery jobs: probhub_checkpoint, probhub_seal, probhub_assemble, probhub_build
-read-only queries: probhub_generation_status, probhub_report, probhub_verify_package
+read-only queries: probhub_generation_status, probhub_report, probhub_verify_package, probhub_delivery_check
 formal publication: probhub_build requires confirm: true and the DSH approval channel
 ```
 

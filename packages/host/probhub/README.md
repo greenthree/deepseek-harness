@@ -8,6 +8,8 @@ Host bridge for a ProbHub Workspace Schema v1 project. The plugin registers `/pr
 
 Core execution uses the shared `SubprocessRuntime`, the caller's already-authorized `workspace-write` `sandboxPolicy`/`sandbox` confinement, bounded collected output, process-tree termination, and the configured executable. Deployments that omit either sandbox service fail closed with `sandbox_unavailable`. The bridge owns route lifetime through a Cordis effect; unloading the plugin removes every route.
 
+The read-only `GET /probhub/api/delivery-check?sessionId=...&problemId=...` projection combines status, report, preview-generation completeness, sealed-revision matching, and canonical package verification. It returns bounded blocker codes for the formal publication checklist and never publishes files; the model-facing `probhub_build` tool remains the only publication path.
+
 ## Model Experience
 
 ### ProbHub tools
@@ -26,13 +28,13 @@ When @deepseek-ai/dsh-host-probhub/tools is mounted in an agent preset, these op
 | probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation | workspace-write job | Run validation and write Core-managed caches, evidence, or stress diagnostics. |
 | probhub_checkpoint, probhub_seal, probhub_assemble | workspace-write job | Create a checkpoint, seal a problem, or assemble an isolated preview generation. assemble may create a draft checkpoint when one is missing. |
 | probhub_build | workspace-write job + confirm: true + approval | Publish formal PDF, ZIP, metadata, and Manifest artifacts after Core's sealed-revision checks. |
-| probhub_generation_status, probhub_report, probhub_verify_package | read-only query | Return bounded generation, report, or package-verification projections. verify-package derives the ZIP from the canonical workspace and accepts only problem_id. |
+| probhub_generation_status, probhub_report, probhub_verify_package, probhub_delivery_check | read-only query | Return bounded generation, report, package-verification, or formal-delivery-gate projections. The delivery gate lists blocker codes and never publishes artifacts. |
 
 Background tools return a generic job id immediately. Use job_output to collect bounded Core JSON and job_kill to request cancellation. Write jobs are exclusive; read-only queries may overlap.
 
 validation jobs: probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation
 delivery jobs: probhub_checkpoint, probhub_seal, probhub_assemble, probhub_build
-read-only queries: probhub_generation_status, probhub_report, probhub_verify_package
+read-only queries: probhub_generation_status, probhub_report, probhub_verify_package, probhub_delivery_check
 formal publication: probhub_build requires confirm: true and the DSH approval channel
 ```
 

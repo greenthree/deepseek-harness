@@ -8,6 +8,8 @@ AppFrame 始终挂载会话栏和详情栏；已连接 Session 通过 `SessionPr
 
 试卷 PDF 页通过同源 Host 路由嵌入当前隔离 preview generation；未返回 generation 时保持不可用。正式 Build 仍是后续的显式交付步骤。`/client` 导出表层包含插件主体（`apply`／`inject`）、`LayoutController` 和四个 owner-share 接口。AppFrame、面板 store 与让步求解器仍属于包内部。
 
+健康与评测页可以请求有界的正式交付门禁，列出 generation、sealed revision 和 ZIP 验证阻断原因。正式 Build 仍是需要显式确认并通过 DSH approval 的 `probhub_build` 工具操作。
+
 ## 模型体验
 
 无。布局外壳管理浏览器查看状态；这里没有任何内容进入模型请求。

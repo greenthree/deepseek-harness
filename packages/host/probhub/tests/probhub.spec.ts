@@ -125,6 +125,123 @@ describe('host ProbHub bridge', () => {
     expect(JSON.parse(body())).toMatchObject({ ok: false, state: 'error', code: 'core_bridge_unavailable' })
   })
 
+  it('projects a bounded formal delivery gate from Core status and generation state', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-delivery-check-'))
+    mkdirSync(join(root, '.probhub'))
+    mkdirSync(join(root, 'A01'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    try {
+      const { ctx, route } = await mount()
+      const sessionId = 'delivery-check-session'
+      const attached = { id: sessionId, header: { cwd: root } }
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      ctx.provide('subprocess', {
+        spawn: (spec: { argv: readonly string[] }) => {
+          const operation = spec.argv[spec.argv.indexOf('--json') + 1]
+          const value = operation === 'status'
+            ? { ok: true, problems: { A01: { state: 'stale', source_hash: 'source-1', data_hash: 'data-1' } } }
+            : operation === 'generation-status'
+              ? {
+                ok: true,
+                generation_id: 'gen-1',
+                state: 'sealed-preview',
+                manifest: {
+                  complete: true,
+                  all_sealed: true,
+                  missing: [],
+                  problems: [{ problem_id: 'A01', state: 'sealed', revision_id: 'sealed-1', source_hash: 'source-1', data_hash: 'data-1' }],
+                },
+              }
+              : { ok: true, problems: [{ id: 'A01', name: 'Alpha' }] }
+          const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+      const { response: res, body } = response()
+      await route.handler(request('GET', `${PROBHUB_API_PATH}/delivery-check?sessionId=${sessionId}&problemId=A01`), res)
+      expect(res.status).toBe(200)
+      const payload = JSON.parse(body()) as {
+        delivery: {
+          ok: boolean
+          state: string
+          checks: { generation: Record<string, unknown>; packages: Record<string, Record<string, unknown>> }
+          blockers: Array<Record<string, unknown>>
+        }
+      }
+      expect(payload.delivery).toMatchObject({ ok: true, state: 'ready' })
+      expect(payload.delivery.checks.generation).toMatchObject({ generationId: 'gen-1', complete: true, allSealed: true })
+      expect(payload.delivery.checks.packages.A01).toMatchObject({ state: 'missing', ok: false })
+      expect(JSON.stringify(payload)).not.toContain(root)
+      expect(payload.delivery.blockers).toHaveLength(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('returns explicit blockers for an incomplete or mismatched generation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-delivery-blocked-'))
+    mkdirSync(join(root, '.probhub'))
+    mkdirSync(join(root, 'A01'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    try {
+      const { ctx, route } = await mount()
+      const sessionId = 'delivery-blocked-session'
+      const attached = { id: sessionId, header: { cwd: root } }
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      ctx.provide('subprocess', {
+        spawn: (spec: { argv: readonly string[] }) => {
+          const operation = spec.argv[spec.argv.indexOf('--json') + 1]
+          const value = operation === 'status'
+            ? { ok: true, problems: { A01: { source_hash: 'source-1', data_hash: 'data-1' } } }
+            : operation === 'generation-status'
+              ? {
+                ok: true,
+                generation_id: 'gen-1',
+                state: 'draft',
+                manifest: {
+                  complete: false,
+                  all_sealed: false,
+                  missing: [{ problem_id: 'A01', reason: 'no checkpoint' }],
+                  problems: [{ problem_id: 'A01', state: 'draft', revision_id: 'rev-1', source_hash: 'other-source', data_hash: 'data-1' }],
+                },
+              }
+              : { ok: true, problems: [{ id: 'A01' }] }
+          const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+      const { response: res, body } = response()
+      await route.handler(request('GET', `${PROBHUB_API_PATH}/delivery-check?sessionId=${sessionId}&problemId=A01`), res)
+      expect(res.status).toBe(200)
+      const payload = JSON.parse(body()) as {
+        delivery: { ok: boolean; state: string; blockers: Array<{ code: string; problemId?: string }> }
+      }
+      expect(payload.delivery.ok).toBe(false)
+      expect(payload.delivery.state).toBe('blocked')
+      expect(payload.delivery.blockers.map(item => item.code)).toEqual(expect.arrayContaining([
+        'generation_incomplete',
+        'generation_not_sealed',
+        'generation_missing',
+        'sealed_revision_invalid',
+        'revision_mismatch',
+      ]))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('serves only the selected problem PDF from the current isolated generation', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-preview-'))
     const generation = join(root, '.probhub', 'generations', 'gen-1')

@@ -6,14 +6,14 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, ParameterSchemaSpec, PreToolDecision } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
-import { dirname, join } from 'node:path'
-import { lstat, realpath, stat } from 'node:fs/promises'
 import {
   DEFAULT_CORE_RUNNER_CONFIG,
   runCore,
   resolveWorkspaceForSession,
   emitProbHubTabRequest,
   startCoreJob,
+  checkDeliveryGate,
+  resolvePackagePath,
   type CoreJobRequest,
   type CoreOperation,
 } from './index.ts'
@@ -29,6 +29,7 @@ const TOOL_TAB_TARGETS: Readonly<Record<string, 'statement' | 'health' | 'pdf'>>
   // visible; read-only generation/package queries can focus the PDF view.
   probhub_assemble: 'health',
   probhub_build: 'health',
+  probhub_delivery_check: 'health',
   probhub_generation_status: 'pdf',
   probhub_report: 'health',
   probhub_verify_package: 'pdf',
@@ -242,30 +243,6 @@ function projectReadValue(operation: 'generation-status' | 'report' | 'verify-pa
   return result
 }
 
-async function packagePath(workspace: string, problemId: string): Promise<string> {
-  const path = join(workspace, `${problemId}.zip`)
-  let info
-  try {
-    info = await lstat(path)
-  } catch {
-    throw new Error(`generated package is missing for ${problemId}`)
-  }
-  if (!info.isFile() || info.isSymbolicLink()) {
-    throw new Error(`generated package is not a regular file for ${problemId}`)
-  }
-  try {
-    const [canonicalWorkspace, canonicalPath] = await Promise.all([realpath(workspace), realpath(path)])
-    const canonicalParent = dirname(canonicalPath)
-    if (canonicalParent !== canonicalWorkspace) throw new Error('package path escapes the canonical workspace')
-    if (!(await stat(canonicalPath)).isFile()) throw new Error(`generated package is not a regular file for ${problemId}`)
-    return canonicalPath
-  } catch (error) {
-    if (error instanceof Error && error.message === 'package path escapes the canonical workspace') throw error
-    if (error instanceof Error && error.message.startsWith('generated package is not a regular file')) throw error
-    throw new Error(`generated package path is not inside the canonical workspace for ${problemId}`)
-  }
-}
-
 function registerOperation(
   ctx: Context,
   operation: CoreOperation,
@@ -308,6 +285,19 @@ function registerOperation(
         ...(parsed.problemIds === undefined ? {} : { problemIds: parsed.problemIds }),
         ...(parsed.extra.length === 0 ? {} : { args: parsed.extra }),
       }
+      if (operation === 'build') {
+        const gate = await checkDeliveryGate(
+          ctx,
+          { command, maxOutputBytes },
+          workspace,
+          { id: agent.session.id, header: agent.session.header, session: agent.session },
+          parsed.problemIds ?? [],
+        )
+        if (!gate.ok) {
+          const reasons = gate.blockers.slice(0, 8).map(item => item.problemId === undefined ? item.code : `${item.code}:${item.problemId}`)
+          throw new Error(`formal build is blocked by delivery checks: ${reasons.join(', ') || 'unknown'}`)
+        }
+      }
       const id = startCoreJob(
         ctx,
         { command, maxOutputBytes },
@@ -329,7 +319,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.systemPrompt.section({
     name: 'tool:probhub',
     order: 107,
-    text: 'Use ProbHub validation and delivery tools for explicit background work. Keep each returned job id, continue independent work, collect with job_output, and stop jobs that no longer matter. Write operations use the current workspace and the caller\'s already-authorized workspace-write policy.',
+    text: 'Use ProbHub validation and delivery tools for explicit background work. Before formal publication, call probhub_delivery_check and resolve every blocker, then call probhub_build only after the user confirms the release and the normal approval prompt allows it. Keep each returned job id, continue independent work, collect with job_output, and stop jobs that no longer matter. Write operations use the current workspace and the caller\'s already-authorized workspace-write policy.',
   })
   // Observe the final immutable tool result. Navigation is advisory: policy
   // failures and rejected Core calls do not move the browser, and a listener
@@ -525,6 +515,42 @@ export function apply(ctx: Context, config: Config = {}): void {
     command,
     maxOutputBytes,
   )
+  ctx.tools.register(defineTool({
+    name: 'probhub_delivery_check',
+    description: 'Check bounded formal-publication prerequisites for one or more Schema v1 problems. This is read-only and never publishes artifacts.',
+    parameters: {
+      problem_ids: {
+        type: 'array',
+        required: true,
+        items: { type: 'string' },
+        description: 'One to 256 distinct Schema v1 problem ids from the current workspace.',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { ok: { type: 'boolean', required: true } } },
+      render: jsonResult,
+    },
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const agent: Agent | undefined = exec.agent
+      if (agent === undefined) throw new Error('probhub_delivery_check requires a calling agent')
+      const value = args as { problem_ids?: unknown }
+      const ids = validateProblemIds(value.problem_ids)
+      const workspace = await resolveWorkspaceForSession(agent.session)
+      const gate = await checkDeliveryGate(
+        ctx,
+        { command, maxOutputBytes },
+        workspace,
+        { id: agent.session.id, header: agent.session.header, session: agent.session },
+        ids,
+      )
+      // The gate is assembled from already bounded JSON-safe Core projections;
+      // this assertion only adapts its public structural interface to the
+      // generic tool-result index signature.
+      return gate as unknown as { ok: boolean } & Record<string, JsonValue>
+    },
+    presentCall: args => presentTitle('delivery-check', args),
+  }))
 }
 
 function registerReadOperation(
@@ -561,7 +587,7 @@ function registerReadOperation(
       if (operation === 'verify-package') {
         const problemId = parsed[0]
         if (problemId === undefined) throw new Error(`${toolName} requires a problem id`)
-        extra = [await packagePath(workspace.cwd, problemId), '--require-pdf', '--problem', problemId]
+        extra = [await resolvePackagePath(workspace.cwd, problemId), '--require-pdf', '--problem', problemId]
       }
       const result = await runCore(
         ctx,

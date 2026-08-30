@@ -27,6 +27,7 @@ export { LayoutController } from './service.ts'
 export type { ILayout } from './service.ts'
 export type { ProbHubControllerState } from './probhub-controller.ts'
 export type { ProbHubOverview, ProbHubProblem, ProbHubProblemReport, ProbHubReport } from './ProbHubWorkbench.tsx'
+export type { ProbHubDeliveryGate } from './probhub-controller.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
