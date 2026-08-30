@@ -18,6 +18,7 @@ import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
 import { ProbHubWorkbench } from './ProbHubWorkbench.tsx'
 import { probHubController, useProbHub } from './probhub-controller.ts'
+import type { ProbHubControllerState } from './probhub-controller.ts'
 
 /** Full composed props: runtime share + child-slot render share + store share. */
 export type AppFrameProps =
@@ -26,8 +27,15 @@ export type AppFrameProps =
   & PropsStore<ReturnType<typeof createLayoutStore>>
 
 /** Center column grid item (session-body building block). */
-function CenterColumn(props: { children?: ReactNode; sessionId?: string | undefined }) {
-  return <div className={css.centerCol}><ProbHubWorkbench sessionId={props.sessionId}>{props.children}</ProbHubWorkbench></div>
+function CenterColumn(props: {
+  children?: ReactNode
+  sessionId?: string | undefined
+  probHub: ProbHubControllerState
+}) {
+  const content = props.probHub.snapshot.state === 'unavailable'
+    ? props.children
+    : <ProbHubWorkbench sessionId={props.sessionId}>{props.children}</ProbHubWorkbench>
+  return <div className={css.centerCol}>{content}</div>
 }
 
 /** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
@@ -200,7 +208,7 @@ export function AppFrame({
             the shell's own pending rendering. The conversation
             is session-maybe; the strict details entry naturally renders
             empty while no session is current. */}
-        <CenterColumn sessionId={probHubSession}>{renderSlot('conversation', {})}</CenterColumn>
+        <CenterColumn sessionId={probHubSession} probHub={probHub}>{renderSlot('conversation', {})}</CenterColumn>
         <DetailsColumn>{renderSlot('details', {})}</DetailsColumn>
       </>
       <div className={css.overlayLayer} data-shell-overlay>

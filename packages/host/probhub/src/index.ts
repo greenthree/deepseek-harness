@@ -83,6 +83,7 @@ interface BridgeResponse {
   readonly problems?: readonly ProblemSummary[]
   readonly status?: unknown
   readonly lint?: unknown
+  readonly report?: unknown
   readonly code?: string
   readonly error?: string
 }
@@ -160,19 +161,25 @@ async function handleRequest(ctx: Context, config: Config, req: IncomingMessage,
   }
   const operation = url.pathname.slice(`${PROBHUB_API_PATH}/`.length)
   if (operation !== 'overview' && operation !== 'status' && operation !== 'lint') {
-    const problemMatch = /^problems\/([^/]+)\/(status|lint)$/.exec(operation)
+    const problemMatch = /^problems\/([^/]+)\/(status|lint|report)$/.exec(operation)
     const problemId = problemMatch?.[1]
     const problemOperation = problemMatch?.[2]
     if (problemId === undefined || problemOperation === undefined || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(problemId)) {
       json(res, 404, { ok: false, state: 'error', code: 'not_found', error: 'unknown ProbHub route' })
       return
     }
-    await runProblemOperation(ctx, config, res, workspace.value, problemOperation, problemId, session.session)
+    await runProblemOperation(ctx, config, res, workspace.value, problemOperation as 'status' | 'lint' | 'report', problemId, session.session)
     return
   }
-  const status = operation === 'lint' ? undefined : await runCore(ctx, config, workspace.value.cwd, 'status', [], session.session)
-  const lint = operation === 'status' ? undefined : await runCore(ctx, config, workspace.value.cwd, 'lint', [], session.session)
-  const migration = migrationCode(status?.value) ?? migrationCode(lint?.value)
+  const [status, lint, report] = await Promise.all([
+    operation === 'lint' ? Promise.resolve(undefined) : runCore(ctx, config, workspace.value.cwd, 'status', [], session.session),
+    operation === 'status' ? Promise.resolve(undefined) : runCore(ctx, config, workspace.value.cwd, 'lint', [], session.session),
+    operation === 'overview' ? runCore(ctx, config, workspace.value.cwd, 'report', [], session.session) : Promise.resolve(undefined),
+  ])
+  const migration = migrationCode(status?.value) ?? migrationCode(lint?.value) ?? migrationCode(report?.value)
+  // Report is an enrichment for the workbench. A slow or unavailable report
+  // must not hide the basic status/lint overview; its own adapter/core result
+  // remains visible through the bounded report projection when available.
   const adapterOk = (status?.adapterOk ?? true) && (lint?.adapterOk ?? true)
   const coreOk = (status?.coreOk ?? true) && (lint?.coreOk ?? true)
   const body: BridgeResponse = {
@@ -181,6 +188,9 @@ async function handleRequest(ctx: Context, config: Config, req: IncomingMessage,
     workspace: publicWorkspace(workspace.value),
     ...(status === undefined ? {} : { status: projectCore(status.value) }),
     ...(lint === undefined ? {} : { lint: projectCore(lint.value) }),
+    ...(report === undefined ? {} : {
+      report: report.adapterOk ? projectReport(report.value) : { ok: false, code: report.error ?? 'core_failed' },
+    }),
     ...(operation === 'overview' ? { problems: summarizeProblems(status?.value, lint?.value) } : {}),
     ...(migration === undefined ? {} : { code: migration }),
     ...(adapterOk ? {} : { code: status?.error ?? lint?.error ?? 'core_failed' }),
@@ -193,7 +203,7 @@ async function runProblemOperation(
   config: Config,
   res: ServerResponse,
   workspace: ResolvedWorkspace,
-  operation: string,
+  operation: 'status' | 'lint' | 'report',
   problem: string,
   session?: Session,
 ): Promise<void> {
@@ -203,10 +213,150 @@ async function runProblemOperation(
     ok: result.adapterOk && result.coreOk,
     state: result.adapterOk ? (migration === undefined ? 'ready' : 'migration_required') : 'error',
     workspace: publicWorkspace(workspace),
-    [operation]: projectCore(result.value),
+    [operation]: operation === 'report' ? projectReport(result.value) : projectCore(result.value),
     ...(migration === undefined ? {} : { code: migration }),
     ...(result.error === undefined ? {} : { code: result.error }),
   })
+}
+
+function projectReport(value: unknown): Record<string, unknown> {
+  if (!isRecord(value) || typeof value.ok !== 'boolean') return { ok: false }
+  const result: Record<string, unknown> = { ok: value.ok }
+  if (typeof value.analysis_state === 'string') result.analysisState = safeMarker(value.analysis_state)
+  if (isRecord(value.summary)) result.summary = projectReportSummary(value.summary)
+  if (Array.isArray(value.problems)) {
+    result.problems = value.problems.slice(0, 256).flatMap((item) => {
+      if (!isRecord(item) || typeof item.id !== 'string') return []
+      const row: Record<string, unknown> = { id: safeMarker(item.id) ?? 'unknown' }
+      if (typeof item.number === 'number' && Number.isSafeInteger(item.number)) row.number = Math.max(0, Math.min(256, item.number))
+      if (typeof item.label === 'string') row.label = safeMarker(item.label)
+      if (typeof item.name === 'string') row.name = safeText(item.name)
+      if (typeof item.difficulty === 'number' && Number.isSafeInteger(item.difficulty)) row.difficulty = Math.max(0, Math.min(10, item.difficulty))
+      if (Array.isArray(item.tags)) row.tags = item.tags.slice(0, 32).flatMap(tag => typeof tag === 'string' ? [safeText(tag)] : [])
+      if (isRecord(item.limits)) row.limits = projectReportLimits(item.limits)
+      if (isRecord(item.tests)) row.tests = projectReportTests(item.tests)
+      if (Array.isArray(item.groups)) row.groups = item.groups.slice(0, 128).flatMap(group => projectReportGroup(group))
+      if (isRecord(item.recipes)) row.recipes = projectReportRecipes(item.recipes)
+      if (isRecord(item.aggregate_constraints)) row.aggregateConstraints = projectReportAggregate(item.aggregate_constraints)
+      if (isRecord(item.calibration)) row.calibration = projectReportState(item.calibration)
+      if (isRecord(item.judge_qa)) row.judgeQa = projectReportQa(item.judge_qa)
+      if (isRecord(item.mutation)) row.mutation = projectReportMutation(item.mutation)
+      if (isRecord(item.kill_matrix)) row.killMatrix = projectReportKillMatrix(item.kill_matrix)
+      if (Array.isArray(item.diagnostics)) row.diagnostics = projectReportDiagnostics(item.diagnostics)
+      return [row]
+    })
+  }
+  if (Array.isArray(value.diagnostics)) result.diagnostics = projectReportDiagnostics(value.diagnostics)
+  return result
+}
+
+function projectReportDiagnostics(values: unknown[]): readonly Record<string, string>[] {
+  return values.slice(0, 64).flatMap((item) => {
+    if (!isRecord(item)) return []
+    const row: Record<string, string> = {}
+    if (typeof item.code === 'string') row.code = safeMarker(item.code) ?? 'diagnostic'
+    if (typeof item.severity === 'string') row.severity = safeMarker(item.severity) ?? 'info'
+    return Object.keys(row).length === 0 ? [] : [row]
+  })
+}
+
+function projectReportSummary(value: Record<string, unknown>): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (!/count|cases|bytes|groups|solutions|warnings|errors|killed|survived|selected|effective|excluded|raw/i.test(key)) continue
+    if (typeof item !== 'number' || !Number.isFinite(item)) continue
+    result[key] = Math.max(0, Math.min(1_000_000, Math.trunc(item)))
+  }
+  return result
+}
+
+function projectReportLimits(value: Record<string, unknown>): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const key of ['time', 'memory', 'output', 'processes'] as const) {
+    const item = value[key]
+    if (typeof item === 'number' && Number.isFinite(item)) result[key] = Math.max(0, Math.min(1_000_000, item))
+  }
+  return result
+}
+
+function projectReportTests(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const suite of ['sample', 'secret', 'total'] as const) {
+    if (isRecord(value[suite])) result[suite] = projectReportSummary(value[suite])
+  }
+  return result
+}
+
+function projectReportGroup(value: unknown): Record<string, unknown>[] {
+  if (!isRecord(value) || typeof value.name !== 'string') return []
+  const result: Record<string, unknown> = { name: safeMarker(value.name) ?? 'unknown' }
+  if (typeof value.role === 'string') result.role = safeMarker(value.role)
+  for (const key of ['sample_cases', 'secret_cases', 'total_cases'] as const) {
+    const item = value[key]
+    if (typeof item === 'number' && Number.isFinite(item)) result[key] = Math.max(0, Math.min(1_000_000, Math.trunc(item)))
+  }
+  if (typeof value.secret_ratio === 'number' && Number.isFinite(value.secret_ratio)) result.secretRatio = Math.max(0, Math.min(1, value.secret_ratio))
+  return [result]
+}
+
+function projectReportRecipes(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const key of ['analysis_state', 'total', 'manual', 'generated', 'covered_secret_cases', 'uncovered_secret_cases', 'random', 'targeted', 'near_boundary'] as const) {
+    const item = value[key]
+    if (typeof item === 'number' && Number.isFinite(item)) result[key] = Math.max(0, Math.min(1_000_000, Math.trunc(item)))
+    else if (typeof item === 'string') result[key] = safeMarker(item)
+  }
+  if (typeof value.coverage_ratio === 'number' && Number.isFinite(value.coverage_ratio)) result.coverageRatio = Math.max(0, Math.min(1, value.coverage_ratio))
+  return result
+}
+
+function projectReportAggregate(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  if (typeof value.state === 'string') result.state = safeMarker(value.state)
+  if (typeof value.multi_case_detected === 'boolean') result.multiCaseDetected = value.multi_case_detected
+  if (isRecord(value.summary)) result.summary = projectReportSummary(value.summary)
+  return result
+}
+
+function projectReportState(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const key of ['state', 'status'] as const) {
+    if (typeof value[key] === 'string') result[key] = safeMarker(value[key])
+  }
+  for (const key of ['target_guarantee', 'configured', 'applicable'] as const) {
+    if (typeof value[key] === 'boolean') result[key] = value[key]
+  }
+  return result
+}
+
+function projectReportQa(value: Record<string, unknown>): Record<string, unknown> {
+  const result = projectReportState(value)
+  for (const key of ['declared_cases', 'evidence_cases', 'matched_cases', 'declared_probes', 'evidence_probes', 'manual_review_probes'] as const) {
+    const item = value[key]
+    if (typeof item === 'number' && Number.isFinite(item)) result[key] = Math.max(0, Math.min(1_000_000, Math.trunc(item)))
+  }
+  return result
+}
+
+function projectReportMutation(value: Record<string, unknown>): Record<string, unknown> {
+  const result = projectReportState(value)
+  if (isRecord(value.summary)) result.summary = projectReportSummary(value.summary)
+  if (isRecord(value.planning)) result.planning = projectReportSummary(value.planning)
+  return result
+}
+
+function projectReportKillMatrix(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  if (typeof value.evidence_state === 'string') result.evidenceState = safeMarker(value.evidence_state)
+  if (Array.isArray(value.columns)) result.columns = value.columns.slice(0, 128).flatMap(item => typeof item === 'string' ? [safeMarker(item)] : [])
+  if (Array.isArray(value.rows)) result.rows = value.rows.slice(0, 128).flatMap((item) => {
+    if (!isRecord(item)) return []
+    const row: Record<string, unknown> = {}
+    if (typeof item.program === 'string') row.program = safeMarker(item.program) ?? safeText(item.program)
+    if (typeof item.overall === 'string') row.overall = safeMarker(item.overall)
+    return Object.keys(row).length > 0 ? [row] : []
+  })
+  return result
 }
 
 async function resolveSession(ctx: Context, rawId: string): Promise<SessionRef | undefined> {
@@ -318,6 +468,7 @@ export interface CoreResult {
  * @param operation - Core CLI operation to run.
  * @param problems - operation arguments derived from validated workspace inputs.
  * @param session - optional Session used to resolve the read-only policy.
+ * @param signal - optional caller cancellation signal forwarded to Core.
  * @returns bounded transport and Core result details.
  */
 export async function runCore(

@@ -125,7 +125,7 @@ describe('host ProbHub bridge', () => {
       expect(payload.workspace).not.toHaveProperty('workspaceFile')
       expect(JSON.stringify(payload)).not.toContain(root)
       expect(JSON.stringify(payload)).not.toMatch(/secret|transcript|evidence/iu)
-      expect(spawns).toHaveLength(2)
+      expect(spawns).toHaveLength(3)
       expect(spawns.every(spec => spec.argv[0] === process.execPath)).toBe(true)
       expect(spawns.every(spec => spec.argv.includes('--workspace') && !spec.argv.includes('--'))).toBe(true)
     } finally {
@@ -140,5 +140,52 @@ describe('host ProbHub bridge', () => {
     await route.handler({ method: 'GET', url: `${PROBHUB_PATH}/api/overview?sessionId=missing&cwd=C:/escape` }, res)
     expect(res.status).toBe(400)
     expect(JSON.parse(body())).toMatchObject({ ok: false, code: 'session_missing' })
+  })
+
+  it('projects a problem report for the workbench without source paths or raw evidence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-report-'))
+    mkdirSync(join(root, '.probhub'))
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: []\n')
+    try {
+      const { ctx, route } = await mount()
+      ctx.provide('sessions', { get: (id: string) => id === 'report-session' ? { header: { cwd: root } } : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      ctx.provide('subprocess', {
+        spawn: (spec: SpawnSpec) => {
+          expect(spec.argv).toContain('report')
+          const value = {
+            ok: true,
+            analysis_state: 'declared_inputs_and_local_evidence',
+            problems: [{
+              id: 'A01', number: 1, label: 'A', name: 'Example', difficulty: 2,
+              tags: ['dp'], limits: { time: 1, memory: 256, output: 64, processes: 8 },
+              tests: { sample: { cases: 1 }, secret: { cases: 3 } },
+              groups: [{ name: 'edge', role: 'wrong-solution-killer', secret_cases: 1, secret_ratio: 1 }],
+              judge_qa: { state: 'passed', declared_cases: 2, evidence_cases: 2 },
+              diagnostics: [{ code: 'hidden', severity: 'warning', message: `${root} private detail` }],
+            }],
+            path: `${root}\\A01\\problem.md`,
+          }
+          const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+      const { response: res, body } = response()
+      await route.handler({ method: 'GET', url: `${PROBHUB_PATH}/api/problems/A01/report?sessionId=report-session` }, res)
+      expect(res.status).toBe(200)
+      const payload = JSON.parse(body()) as { report: { problems: Array<Record<string, unknown>> } }
+      expect(payload.report.problems[0]).toMatchObject({
+        id: 'A01', name: 'Example', judgeQa: { state: 'passed', declared_cases: 2 },
+      })
+      expect(JSON.stringify(payload)).not.toContain(root)
+      expect(JSON.stringify(payload)).not.toContain('private detail')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

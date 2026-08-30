@@ -43,6 +43,7 @@ interface JsonResponse {
   workspace?: { workspaceId: string; schemaVersion: number }
   problems?: Problem[]
   problem?: Problem
+  report?: { ok: boolean; problems?: Array<Record<string, unknown>> }
   plugin?: string
   routes?: string[]
 }
@@ -184,7 +185,7 @@ class ProbHubFixture {
       })
       return
     }
-    const problemMatch = url.pathname.match(new RegExp(`^${API_PATH}/problems/([^/]+)/(status|lint)$`))
+    const problemMatch = url.pathname.match(new RegExp(`^${API_PATH}/problems/([^/]+)/(status|lint|report)$`))
     if (problemMatch !== null) {
       const encodedId = problemMatch[1]!
       let id: string
@@ -209,7 +210,24 @@ class ProbHubFixture {
       } else if (problem === undefined) {
         this.write(response, 404, { ok: false, code: 'problem-not-found' })
       } else {
-        this.write(response, 200, { ok: true, state: 'ready', problem, workspace: { workspaceId: `workspace-${session.id}`, schemaVersion: 1 } })
+        const payload = problemMatch[2] === 'report'
+          ? {
+            ok: true,
+            state: 'ready',
+            workspace: { workspaceId: `workspace-${session.id}`, schemaVersion: 1 },
+            report: {
+              ok: true,
+              problems: [{
+                id: problem.id,
+                tests: { total: { cases: 1 } },
+                groups: [],
+                judgeQa: { state: 'not-configured' },
+                aggregateConstraints: { state: 'not-detected' },
+              }],
+            },
+          }
+          : { ok: true, state: 'ready', problem, workspace: { workspaceId: `workspace-${session.id}`, schemaVersion: 1 } }
+        this.write(response, 200, payload)
       }
       return
     }
@@ -291,6 +309,16 @@ describe('ProbHub P0 Host route contract (fixture)', () => {
     expect(second.status).toBe(200)
     expect(second.body).toMatchObject({ ok: true, problem: problemB })
     expect(second.body).not.toMatchObject({ problem: problemA })
+  })
+
+  it('returns a bounded report for the selected problem', async () => {
+    fixture.bindSession(undefined)
+    const result = await json(baseUrl, `${API_PATH}/problems/A01/report?sessionId=session-a`)
+    expect(result.status).toBe(200)
+    expect(result.body).toMatchObject({
+      ok: true,
+      report: { ok: true, problems: [{ id: 'A01', tests: { total: { cases: 1 } } }] },
+    })
   })
 
   it('rejects traversal, malformed IDs, unknown sessions, and unknown problems', async () => {
@@ -400,6 +428,6 @@ describe('ProbHub P0 live endpoint opt-in', () => {
     const result = await json(baseUrl!, BASE_PATH)
     expect(result.status).toBe(200)
     expect(result.body).toMatchObject({ ok: true })
-    expect(result.body.routes).toEqual([`${API_PATH}/overview`, `${API_PATH}/problems/:id/status|lint`])
+    expect(result.body.routes).toEqual([`${API_PATH}/overview`, `${API_PATH}/problems/:id/status|lint|report`])
   })
 })

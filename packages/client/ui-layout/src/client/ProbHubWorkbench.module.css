@@ -45,6 +45,10 @@
 .healthCard div { flex: 1; }
 .healthCard p { margin: 3px 0 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .healthStatus { color: var(--dsw-alias-button-info-fill); font-family: var(--ds-font-family-code); font-size: 11px; }
+.reportGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.reportCard { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); }
+.reportCard span, .reportCard small { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+.reportCard strong { overflow: hidden; text-overflow: ellipsis; font-family: var(--ds-font-family-code); font-size: 12px; }
 .pdfPlaceholder { display: grid; justify-items: center; gap: 8px; min-height: 240px; padding: 40px 24px; box-sizing: border-box; text-align: center; }
 .pdfPlaceholder p { max-width: 340px; }
 .pdfIcon { display: grid; place-items: center; width: 54px; height: 64px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; color: var(--dsw-alias-button-info-fill); background: var(--dsw-static-blue-50); font-family: var(--ds-font-family-code); font-size: 12px; }
@@ -57,6 +61,9 @@
 .bindingCard { display: grid; gap: 5px; margin: 16px 18px 8px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--dsw-static-blue-300) 30%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--dsw-static-blue-800) 70%, transparent); }
 .bindingCard span, .bindingCard small { color: var(--dsw-static-blue-100); font-size: 10px; }
 .bindingCard strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ds-font-family-code); font-size: 12px; font-weight: 500; }
+.copilotSummary { display: grid; gap: 5px; margin: 8px 18px 10px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--dsw-static-blue-300) 26%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--dsw-static-blue-800) 55%, transparent); }
+.copilotSummary span, .copilotSummary small { color: var(--dsw-static-blue-100); font-size: 10px; }
+.copilotSummary strong { overflow: hidden; text-overflow: ellipsis; color: var(--dsw-static-neutral-bluish-00); font-size: 11px; font-weight: 500; }
 .conversationSlot { min-height: 0; flex: 1; overflow: hidden; margin-top: 2px; }
 .emptyConversation { margin: 12px 18px; padding: 14px; border: 1px dashed color-mix(in srgb, var(--dsw-static-blue-300) 45%, transparent); border-radius: 10px; color: var(--dsw-static-blue-100); font-size: 12px; line-height: 18px; }
 

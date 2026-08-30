@@ -54,7 +54,10 @@ const refresh = async (nextSession: string | undefined): Promise<void> => {
   try {
     next = response.ok
       ? await response.json() as ProbHubOverview
-      : { state: response.status === 409 ? 'migration_required' : 'error', problems: [] }
+      : {
+        state: response.status === 404 ? 'unavailable' : response.status === 409 ? 'migration_required' : 'error',
+        problems: [],
+      }
   } catch {
     return
   }

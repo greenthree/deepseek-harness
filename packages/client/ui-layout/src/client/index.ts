@@ -24,7 +24,7 @@ import { ThemePresenter } from './theme-presenter.ts'
 export { LayoutController } from './service.ts'
 export type { ILayout } from './service.ts'
 export type { ProbHubControllerState } from './probhub-controller.ts'
-export type { ProbHubOverview, ProbHubProblem } from './ProbHubWorkbench.tsx'
+export type { ProbHubOverview, ProbHubProblem, ProbHubProblemReport, ProbHubReport } from './ProbHubWorkbench.tsx'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

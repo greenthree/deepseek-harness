@@ -51,4 +51,10 @@ describe('ProbHub sidebar section', () => {
     expect(probHubController.getSnapshot().snapshot.workspaceId).toBe('workspace-b')
     expect(probHubController.getSnapshot().selectedId).toBe('B02')
   })
+
+  it('treats an absent Host route as unavailable instead of replacing the DSH shell', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({}, false, 404)))
+    await act(async () => { await probHubController.refresh('session-missing-host') })
+    expect(probHubController.getSnapshot().snapshot.state).toBe('unavailable')
+  })
 })
