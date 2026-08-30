@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProbHubWorkbench.module.css'
-import { listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
+import { cancelProbHubJob, listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
 
 /** Read-only projection returned by the Harness ProbHub prefix route. */
 export interface ProbHubProblem {
@@ -135,9 +135,22 @@ function deliveryStatus(value: string | undefined): string {
 }
 
 function deliveryOperationLabel(operation: ProbHubDeliveryOperation): string {
+  if (operation === 'judge') return 'Judge'
+  if (operation === 'stress') return 'stress（1000）'
+  if (operation === 'judge-qa') return 'Judge QA'
+  if (operation === 'mutation') return 'mutation'
   if (operation === 'checkpoint') return 'Checkpoint'
   if (operation === 'seal') return 'Seal'
   return '组装预览'
+}
+
+function latestOperationJob(jobs: readonly JobView[], operation: ProbHubDeliveryOperation, problemId: string): JobView | undefined {
+  const label = operation === 'assemble' ? 'assemble' : `${operation} ${problemId}`
+  return jobs.filter(job => job.label === label).at(-1)
+}
+
+function isLiveJob(job: JobView | undefined): boolean {
+  return job?.status === 'running' || job?.status === 'stopping'
 }
 
 
@@ -176,6 +189,8 @@ function WorkbenchBody({
   deliveryError,
   deliveryMessage,
   onStartDelivery,
+  cancelBusy,
+  onCancelJob,
 }: {
   problem: ProbHubProblem | undefined
   report: ProbHubProblemReport | undefined
@@ -192,6 +207,8 @@ function WorkbenchBody({
   deliveryError: string | undefined
   deliveryMessage: string | undefined
   onStartDelivery: (operation: ProbHubDeliveryOperation) => void
+  cancelBusy: string | undefined
+  onCancelJob: (jobId: string) => void
 }) {
   if (problem === undefined) {
     return <StateNotice overview={EMPTY_OVERVIEW} />
@@ -264,7 +281,12 @@ function WorkbenchBody({
             <li><span>正式交付</span><strong data-state="manual">需显式 Build</strong></li>
           </ul>
           <div className={css.deliveryActions}>
-            {(['checkpoint', 'seal', 'assemble'] as const).map(operation => <button key={operation} type="button" onClick={() => { onStartDelivery(operation) }} disabled={deliveryBusy !== undefined}>{deliveryBusy === operation ? `${deliveryOperationLabel(operation)}…` : deliveryOperationLabel(operation)}</button>)}
+            {(['judge', 'stress', 'judge-qa', 'mutation', 'checkpoint', 'seal', 'assemble'] as const).map((operation) => {
+              const job = latestOperationJob(jobs, operation, problem.id)
+              const running = isLiveJob(job)
+              const suffix = running && job !== undefined ? ` · ${jobStatusLabel(job.status)}` : ''
+              return <button key={operation} type="button" onClick={() => { onStartDelivery(operation) }} disabled={deliveryBusy !== undefined || running}>{deliveryBusy === operation ? `${deliveryOperationLabel(operation)}…` : `${deliveryOperationLabel(operation)}${suffix}`}</button>
+            })}
           </div>
           {deliveryError && <div className={css.editorError} role="alert">{deliveryError}</div>}
           {deliveryMessage && <div className={css.editorSuccess} role="status">{deliveryMessage}</div>}
@@ -296,6 +318,9 @@ function WorkbenchBody({
                     {job.detail && <small title={job.detail}>{job.detail}</small>}
                   </div>
                   <span className={css.jobStatus} data-status={status}>{status}</span>
+                  {(job.status === 'running' || job.status === 'stopping')
+                    ? <button className={css.jobCancel} type="button" onClick={() => { onCancelJob(job.id) }} disabled={cancelBusy === job.id}>{cancelBusy === job.id ? '取消中…' : '取消'}</button>
+                    : null}
                 </li>
               )
             })}
@@ -329,6 +354,8 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
   const [deliveryError, setDeliveryError] = useState<string | undefined>()
   const [deliveryMessage, setDeliveryMessage] = useState<string | undefined>()
   const deliveryRequest = useRef(0)
+  const [cancelBusy, setCancelBusy] = useState<string | undefined>()
+  const cancelRequest = useRef(0)
   const appliedTabRequest = useRef(0)
   const editorRequest = useRef(0)
   const lastStableSession = useRef(sessionId)
@@ -353,11 +380,13 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
       && selected.id !== lastStableProblem.current
     if (sessionChanged || problemChanged) {
       deliveryRequest.current += 1
+      cancelRequest.current += 1
       setEditor(undefined)
       setSourceTargets([])
       setDeliveryBusy(undefined)
       setDeliveryError(undefined)
       setDeliveryMessage(undefined)
+      setCancelBusy(undefined)
     }
     lastStableSession.current = sessionId
     if (selected?.id !== undefined) lastStableProblem.current = selected.id
@@ -435,7 +464,14 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     setDeliveryBusy(operation)
     setDeliveryError(undefined)
     setDeliveryMessage(undefined)
-    const result = await startProbHubDeliveryJob(targetSession, operation, operation === 'assemble' ? undefined : targetProblem)
+    const result = await startProbHubDeliveryJob(
+      targetSession,
+      operation,
+      operation === 'assemble' ? undefined : targetProblem,
+      false,
+      operation === 'stress' ? 1000 : undefined,
+      operation === 'stress' ? 12345 : undefined,
+    )
     if (requestId !== deliveryRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
     if (result.error !== undefined || result.job === undefined) {
       setDeliveryBusy(undefined)
@@ -444,6 +480,21 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     }
     setDeliveryBusy(undefined)
     setDeliveryMessage(`已提交 ${deliveryOperationLabel(operation)} 任务（${result.job.id}），可在健康摘要中查看状态。`)
+  }
+  const cancelJob = async (jobId: string): Promise<void> => {
+    if (sessionId === undefined || cancelBusy !== undefined) return
+    const targetSession = sessionId
+    const requestId = ++cancelRequest.current
+    setCancelBusy(jobId)
+    setDeliveryError(undefined)
+    const result = await cancelProbHubJob(targetSession, jobId)
+    if (requestId !== cancelRequest.current || targetSession !== sessionId) return
+    setCancelBusy(undefined)
+    if (result.error !== undefined) {
+      setDeliveryError(result.error.message)
+      return
+    }
+    setDeliveryMessage(result.cancelled === true ? `已请求取消任务 ${jobId}。` : `任务 ${jobId} 已结束。`)
   }
   useEffect(() => {
     if (tabRequest === undefined || tabRequest.sequence <= appliedTabRequest.current) return
@@ -497,6 +548,8 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
                 deliveryError={deliveryError}
                 deliveryMessage={deliveryMessage}
                 onStartDelivery={(operation) => { void startDelivery(operation) }}
+                cancelBusy={cancelBusy}
+                onCancelJob={(jobId) => { void cancelJob(jobId) }}
               />}
           </main>
         </div>

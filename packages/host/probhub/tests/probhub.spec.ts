@@ -86,10 +86,14 @@ describe('host ProbHub bridge', () => {
       const attached = { id: sessionId, header: { cwd: root } }
       const agent = { id: sessionId, session: attached }
       let started: { kind: string; label: string; run: () => unknown } | undefined
+      let killed = ''
       ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
       ctx.provide('agents', { get: (id: string) => id === sessionId ? agent : undefined } as never)
       ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'workspace-write', workspaceRoot: root }) } as never)
-      ctx.provide('jobs', { start: (spec: { kind: string; label: string; run: () => unknown }) => { started = spec; return 'probhub-1' } } as never)
+      ctx.provide('jobs', {
+        start: (spec: { kind: string; label: string; run: () => unknown }) => { started = spec; return 'probhub-1' },
+        kill: (id: { toString: () => string }) => { killed = id.toString(); return 'requested' },
+      } as never)
 
       const seal = response('POST')
       await route.handler(request('POST', `${PROBHUB_API_PATH}/jobs?sessionId=${sessionId}&problemId=A01`, JSON.stringify({ operation: 'seal', noCache: true })), seal.response)
@@ -101,6 +105,12 @@ describe('host ProbHub bridge', () => {
       await route.handler(request('POST', `${PROBHUB_API_PATH}/jobs?sessionId=${sessionId}&problemId=A01`, JSON.stringify({ operation: 'build' })), invalid.response)
       expect(invalid.response.status).toBe(400)
       expect(JSON.parse(invalid.body())).toMatchObject({ ok: false, code: 'job_operation_invalid' })
+
+      const cancelled = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/jobs/cancel?sessionId=${sessionId}&jobId=probhub-1`), cancelled.response)
+      expect(cancelled.response.status).toBe(200)
+      expect(JSON.parse(cancelled.body())).toMatchObject({ ok: true, cancelled: true })
+      expect(killed).toBe('probhub-1')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

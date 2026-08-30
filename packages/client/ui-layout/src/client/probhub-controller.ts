@@ -50,8 +50,8 @@ export interface ProbHubSourceError {
   readonly currentRevision?: string
 }
 
-/** Non-publishing Core jobs that the workbench may start explicitly. */
-export type ProbHubDeliveryOperation = 'checkpoint' | 'seal' | 'assemble'
+/** Core jobs that the workbench may start explicitly; build stays excluded. */
+export type ProbHubDeliveryOperation = 'judge' | 'stress' | 'judge-qa' | 'mutation' | 'checkpoint' | 'seal' | 'assemble'
 
 /** A delivery job accepted by the Host Job bridge. */
 export interface ProbHubDeliveryJob {
@@ -201,13 +201,15 @@ export async function startProbHubDeliveryJob(
   operation: ProbHubDeliveryOperation,
   problemId?: string,
   noCache = false,
+  rounds?: number,
+  seed?: number,
 ): Promise<{ readonly job?: ProbHubDeliveryJob; readonly error?: ProbHubSourceError }> {
   const params = new URLSearchParams({ sessionId: currentSession })
   if (operation !== 'assemble' && problemId !== undefined) params.set('problemId', problemId)
   const response = await fetch(`/probhub/api/jobs?${params.toString()}`, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ operation, noCache }),
+    body: JSON.stringify({ operation, noCache, ...(rounds === undefined ? {} : { rounds }), ...(seed === undefined ? {} : { seed }) }),
   }).catch(() => undefined)
   if (response === undefined) return { error: { code: 'job_unavailable', message: '无法连接 ProbHub 任务服务' } }
   let body: unknown
@@ -224,6 +226,28 @@ export async function startProbHubDeliveryJob(
     return { error: { code: 'job_invalid_response', message: '任务服务返回了不完整 job 响应' } }
   }
   return { job: { id: record.id, operation, ...(record.problemId === undefined ? {} : { problemId: record.problemId }) } }
+}
+
+/** Cancel one current-Session ProbHub Job through the Host bridge. */
+export async function cancelProbHubJob(
+  currentSession: string,
+  jobId: string,
+): Promise<{ readonly cancelled?: boolean; readonly error?: ProbHubSourceError }> {
+  const params = new URLSearchParams({ sessionId: currentSession, jobId })
+  const response = await fetch(`/probhub/api/jobs/cancel?${params.toString()}`, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+  }).catch(() => undefined)
+  if (response === undefined) return { error: { code: 'job_unavailable', message: '无法连接 ProbHub 任务服务' } }
+  let body: unknown
+  try { body = await response.json() } catch { return { error: { code: 'job_invalid_response', message: '任务服务返回了无效响应' } } }
+  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    const value = body as Record<string, unknown> | null
+    return { error: { code: typeof value?.code === 'string' ? value.code : 'job_cancel_failed', message: typeof value?.error === 'string' ? value.error : '无法取消 ProbHub 任务' } }
+  }
+  const value = body as Record<string, unknown>
+  if (typeof value.cancelled !== 'boolean') return { error: { code: 'job_invalid_response', message: '任务服务返回了不完整取消结果' } }
+  return { cancelled: value.cancelled }
 }
 
 const empty: ProbHubOverview = { state: 'unavailable', problems: [] }

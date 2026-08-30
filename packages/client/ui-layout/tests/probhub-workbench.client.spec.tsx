@@ -115,6 +115,22 @@ describe('ProbHub workbench report projection', () => {
     expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/jobs'))).toBe(true)
   })
 
+  it('cancels a running ProbHub job from the health task list', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/probhub/api/jobs/cancel')) return new Response(JSON.stringify({ ok: true, state: 'ready', cancelled: true }), { status: 200 })
+      return new Response(JSON.stringify({ state: 'ready', workspaceId: 'workspace-a', problems: [{ id: 'A01', title: 'Alpha' }] }), { status: 200 })
+    })
+    await act(async () => { await probHubController.refresh('session-a') })
+    const useSessions = useSessionsWithJobs({ [SESSION]: [{ id: 'probhub-1' as JobView['id'], kind: 'probhub', label: 'judge A01', status: 'running', startedAt: 1 }] })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessions} />)
+    await act(async () => { screen.getByRole('button', { name: '健康与评测' }).click() })
+    act(() => { screen.getByRole('button', { name: '取消' }).click() })
+    expect((await screen.findByRole('status')).textContent).toContain('probhub-1')
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/jobs/cancel'))).toBe(true)
+  })
+
   it('applies a validated Host tab hint without POSTing selection context', async () => {
     await act(async () => { await probHubController.refresh('session-a') })
     const useSessions = useSessionsWithJobs()

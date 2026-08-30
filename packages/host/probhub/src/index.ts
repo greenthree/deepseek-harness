@@ -18,6 +18,7 @@ import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import z from '@deepseek-ai/schemastery'
 import type { JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs'
+import { JobId } from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -114,6 +115,7 @@ interface BridgeResponse {
   readonly expectedRevision?: string
   readonly currentRevision?: string
   readonly job?: { readonly id: string; readonly operation: CoreOperation; readonly problemId?: string }
+  readonly cancelled?: boolean
 }
 
 interface SessionRef {
@@ -229,7 +231,8 @@ async function handleRequest(
   const isSourceRoute = url.pathname === `${PROBHUB_API_PATH}/source`
   const isSourceTargetsRoute = url.pathname === `${PROBHUB_API_PATH}/source-targets`
   const isJobRoute = url.pathname === `${PROBHUB_API_PATH}/jobs`
-  const allowed = isContextRoute || (isSourceRoute && req.method === 'POST') || (isJobRoute && req.method === 'POST')
+  const isJobCancelRoute = url.pathname === `${PROBHUB_API_PATH}/jobs/cancel`
+  const allowed = isContextRoute || (isSourceRoute && req.method === 'POST') || (isJobRoute && req.method === 'POST') || (isJobCancelRoute && req.method === 'POST')
     ? req.method === 'POST'
     : req.method === 'GET' || req.method === 'HEAD'
   if (!allowed) {
@@ -291,6 +294,10 @@ async function handleRequest(
     await handleDeliveryJobRequest(ctx, config, res, workspace.value, session, req, url)
     return
   }
+  if (isJobCancelRoute) {
+    handleJobCancelRequest(ctx, res, session, url)
+    return
+  }
   const operation = url.pathname.slice(`${PROBHUB_API_PATH}/`.length)
   if (operation !== 'overview' && operation !== 'status' && operation !== 'lint') {
     const problemMatch = /^problems\/([^/]+)\/(status|lint|report)$/.exec(operation)
@@ -337,6 +344,8 @@ interface SourceWritePayload {
   readonly expectedRevision?: unknown
   readonly operation?: unknown
   readonly noCache?: unknown
+  readonly rounds?: unknown
+  readonly seed?: unknown
 }
 
 /** Read and validate one bounded JSON source-edit request. */
@@ -416,6 +425,8 @@ async function handleSourceTargetsRequest(
 interface DeliveryJobPayload {
   readonly operation?: unknown
   readonly noCache?: unknown
+  readonly rounds?: unknown
+  readonly seed?: unknown
 }
 
 /** Start one allowlisted non-publishing delivery job for the current problem. */
@@ -436,8 +447,8 @@ async function handleDeliveryJobRequest(
     return
   }
   const operation = payload.operation
-  if (operation !== 'checkpoint' && operation !== 'seal' && operation !== 'assemble') {
-    json(res, 400, { ok: false, state: 'error', code: 'job_operation_invalid', error: 'only checkpoint, seal, or assemble may be started from the workbench' })
+  if (operation !== 'judge' && operation !== 'stress' && operation !== 'judge-qa' && operation !== 'mutation' && operation !== 'checkpoint' && operation !== 'seal' && operation !== 'assemble') {
+    json(res, 400, { ok: false, state: 'error', code: 'job_operation_invalid', error: 'this workbench operation is not available' })
     return
   }
   if (payload.noCache !== undefined && typeof payload.noCache !== 'boolean') {
@@ -446,6 +457,22 @@ async function handleDeliveryJobRequest(
   }
   if (payload.noCache === true && operation !== 'seal') {
     json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'noCache is only supported for seal' })
+    return
+  }
+  if (payload.rounds !== undefined && operation !== 'stress') {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'rounds is only supported for stress' })
+    return
+  }
+  if (payload.seed !== undefined && operation !== 'stress') {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'seed is only supported for stress' })
+    return
+  }
+  if (payload.rounds !== undefined && (typeof payload.rounds !== 'number' || !Number.isSafeInteger(payload.rounds) || payload.rounds < 1 || payload.rounds > 1_000_000)) {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'rounds must be an integer from 1 to 1000000' })
+    return
+  }
+  if (payload.seed !== undefined && (typeof payload.seed !== 'number' || !Number.isSafeInteger(payload.seed) || payload.seed < 0)) {
+    json(res, 400, { ok: false, state: 'error', code: 'job_request_invalid', error: 'seed must be a non-negative safe integer' })
     return
   }
   const problemId = url.searchParams.get('problemId')
@@ -476,7 +503,10 @@ async function handleDeliveryJobRequest(
     json(res, 503, { ok: false, state: 'error', code: 'workspace_write_unavailable', error: 'workspace-write policy is unavailable' })
     return
   }
-  const args = operation === 'seal' && payload.noCache === true ? ['--no-cache'] : []
+  const args: string[] = []
+  if (operation === 'seal' && payload.noCache === true) args.push('--no-cache')
+  if (operation === 'stress' && payload.rounds !== undefined) args.push('--rounds', String(payload.rounds))
+  if (operation === 'stress' && payload.seed !== undefined) args.push('--seed', String(payload.seed))
   try {
     const jobId = startCoreJob(ctx, {
       command: config.command ?? 'probhub/bin/probhub.js',
@@ -495,6 +525,36 @@ async function handleDeliveryJobRequest(
     })
   } catch {
     json(res, 503, { ok: false, state: 'error', code: 'job_start_failed', error: 'delivery job could not be started' })
+  }
+}
+
+/** Cancel one caller-owned ProbHub Job through the shared registry. */
+function handleJobCancelRequest(
+  ctx: Context,
+  res: ServerResponse,
+  session: SessionRef,
+  url: URL,
+): void {
+  const rawJobId = url.searchParams.get('jobId')
+  if (rawJobId === null || !/^probhub-[1-9][0-9]*$/.test(rawJobId)) {
+    json(res, 400, { ok: false, state: 'error', code: 'job_invalid', error: 'a valid ProbHub job id is required' })
+    return
+  }
+  const agent = ctx.get('agents')?.get(session.id)
+  if (agent === undefined || agent.session.id !== session.id) {
+    json(res, 409, { ok: false, state: 'error', code: 'live_session_required', error: 'a live Harness Session is required to cancel a job' })
+    return
+  }
+  const jobs = ctx.get('jobs')
+  if (jobs === undefined) {
+    json(res, 503, { ok: false, state: 'error', code: 'job_unavailable', error: 'ProbHub Job service is unavailable' })
+    return
+  }
+  try {
+    const result = jobs.kill(JobId(rawJobId), agent, 'workbench')
+    json(res, 200, { ok: true, state: 'ready', cancelled: result === 'requested' })
+  } catch {
+    json(res, 404, { ok: false, state: 'error', code: 'job_not_found', error: 'ProbHub job is not visible to this Session' })
   }
 }
 
