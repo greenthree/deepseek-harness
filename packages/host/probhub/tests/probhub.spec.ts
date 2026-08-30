@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as probhub from '../src/index.ts'
@@ -15,7 +16,7 @@ interface FakeResponse {
   status: number
   headers: Record<string, string>
   writeHead: (status: number, headers: Record<string, string>) => void
-  end: (value?: string) => void
+  end: (value?: string | Uint8Array) => void
 }
 interface CapturedRoute { handler: (req: FakeRequest, res: FakeResponse) => Promise<void> | void }
 interface SpawnSpec { argv: readonly string[] }
@@ -30,7 +31,7 @@ function response(method = 'GET'): { response: FakeResponse; body: () => string 
   const response = {
     req: { method, url: '' },
     writeHead: (status: number, headers: Record<string, string>) => { response.status = status; response.headers = headers },
-    end: (value?: string) => { output = value ?? '' },
+    end: (value?: string | Uint8Array) => { output = typeof value === 'string' ? value : value === undefined ? '' : Buffer.from(value).toString('binary') },
     status: 0,
     headers: {} as Record<string, string>,
   }
@@ -122,6 +123,75 @@ describe('host ProbHub bridge', () => {
     await route.handler({ method: 'GET', url: `${PROBHUB_PATH}/api/health` }, res)
     expect(res.status).toBe(200)
     expect(JSON.parse(body())).toMatchObject({ ok: false, state: 'error', code: 'core_bridge_unavailable' })
+  })
+
+  it('serves only the selected problem PDF from the current isolated generation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-preview-'))
+    const generation = join(root, '.probhub', 'generations', 'gen-1')
+    mkdirSync(join(generation, 'problems'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    const pdf = Buffer.from('%PDF-1.7\npreview\n', 'ascii')
+    writeFileSync(join(generation, 'problems', 'A01.pdf'), pdf)
+    try {
+      const { ctx, route } = await mount()
+      const sessionId = 'preview-session'
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? { header: { cwd: root } } : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      let manifestPdf = 'problems/A01.pdf'
+      ctx.provide('subprocess', {
+        spawn: (spec: { argv: readonly string[] }) => {
+          expect(spec.argv[spec.argv.indexOf('--json') + 1]).toBe('generation-status')
+          const value = {
+            ok: true,
+            state: 'sealed-preview',
+            generation_id: 'gen-1',
+            manifest: {
+              generation_id: 'gen-1',
+              problems: [{
+                problem_id: 'A01',
+                pdf: manifestPdf,
+                pdf_hash: createHash('sha256').update(pdf).digest('hex'),
+              }],
+            },
+          }
+          const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+      const { response: res, body } = response()
+      await route.handler(
+        request('GET', `${PROBHUB_API_PATH}/problems/A01/preview?sessionId=${sessionId}`),
+        res,
+      )
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toBe('application/pdf')
+      expect(res.headers['content-disposition']).toBe('inline')
+      expect(Buffer.from(body(), 'binary')).toEqual(pdf)
+
+      const head = response('HEAD')
+      await route.handler(
+        request('HEAD', `${PROBHUB_API_PATH}/problems/A01/preview?sessionId=${sessionId}`),
+        head.response,
+      )
+      expect(head.response.status).toBe(200)
+      expect(head.body()).toBe('')
+
+      manifestPdf = '../escape.pdf'
+      const invalid = response()
+      await route.handler(
+        request('GET', `${PROBHUB_API_PATH}/problems/A01/preview?sessionId=${sessionId}`),
+        invalid.response,
+      )
+      expect(invalid.response.status).toBe(409)
+      expect(JSON.parse(invalid.body())).toMatchObject({ ok: false, code: 'preview_path_invalid' })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('never emits a body for HEAD', async () => {

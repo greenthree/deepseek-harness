@@ -1,9 +1,9 @@
 /** Read-only HTTP bridge from a Harness session to ProbHub Core. */
 
-import { realpath, stat } from 'node:fs/promises'
+import { lstat, readFile, realpath, stat } from 'node:fs/promises'
 import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, relative as relativePath } from 'node:path'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -46,6 +46,8 @@ export interface Config {
   timeoutMs?: number
   /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
   maxSourceBytes?: number
+  /** Maximum bytes returned by one isolated preview PDF response. */
+  maxPreviewBytes?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -53,6 +55,7 @@ export const Config: z<Config> = z.object({
   maxOutputBytes: z.natural().min(1024).default(1024 * 1024),
   timeoutMs: z.natural().min(1).default(15_000),
   maxSourceBytes: z.natural().min(1024).max(8 * 1024 * 1024).default(512 * 1024),
+  maxPreviewBytes: z.natural().min(1024).max(64 * 1024 * 1024).default(16 * 1024 * 1024),
 })
 
 /** Operations exposed by the background ProbHub Core producer. */
@@ -186,6 +189,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     maxOutputBytes: config.maxOutputBytes ?? 1024 * 1024,
     timeoutMs: config.timeoutMs ?? 15_000,
     maxSourceBytes: config.maxSourceBytes ?? 512 * 1024,
+    maxPreviewBytes: config.maxPreviewBytes ?? 16 * 1024 * 1024,
   }
   const selections = new Map<string, ProblemSelection>()
   const latestSelections = new Map<string, number>()
@@ -288,6 +292,16 @@ async function handleRequest(
   }
   if (isSourceTargetsRoute) {
     await handleSourceTargetsRequest(config, res, workspace.value, url)
+    return
+  }
+  const previewMatch = /^problems\/([^/]+)\/preview$/.exec(url.pathname.slice(`${PROBHUB_API_PATH}/`.length))
+  if (previewMatch !== null) {
+    const problemId = previewMatch[1]
+    if (problemId === undefined || !PROBLEM_ID.test(problemId)) {
+      json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
+      return
+    }
+    await handlePreviewRequest(ctx, config, res, workspace.value, session, problemId)
     return
   }
   if (isJobRoute) {
@@ -840,6 +854,81 @@ async function runProblemOperation(
     ...(migration === undefined ? {} : { code: migration }),
     ...(result.error === undefined ? {} : { code: result.error }),
   })
+}
+
+interface PreviewPdf {
+  readonly bytes: Buffer
+  readonly generationId: string
+}
+
+/**
+ * Resolve one problem PDF from the current isolated Core generation.
+ * Generation status is authoritative; the filesystem path is reconstructed
+ * under the canonical workspace and checked again before bytes are read.
+ */
+async function readPreviewPdf(
+  ctx: Context,
+  config: Config,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  problemId: string,
+): Promise<PreviewPdf> {
+  const result = await runCore(ctx, config, workspace.cwd, 'generation-status', [], session.session)
+  if (!result.adapterOk || !result.coreOk || !isRecord(result.value)) throw new Error('preview_generation_unavailable')
+  const generationId = safeMarker(result.value.generation_id)
+  const manifest = isRecord(result.value.manifest) ? result.value.manifest : undefined
+  const problems = manifest !== undefined && Array.isArray(manifest.problems) ? manifest.problems : []
+  const entry = problems.find((item): item is Record<string, unknown> => isRecord(item) && item.problem_id === problemId)
+  const relativePdf = typeof entry?.pdf === 'string' ? entry.pdf : undefined
+  if (generationId === undefined || relativePdf === undefined || relativePdf.length === 0) throw new Error('preview_not_found')
+  if (isAbsolute(relativePdf) || relativePdf.split(/[\\/]/u).includes('..')) throw new Error('preview_path_invalid')
+  const generationRoot = join(workspace.cwd, '.probhub', 'generations', generationId)
+  const generationInfo = await lstat(generationRoot).catch(() => undefined)
+  if (generationInfo === undefined || !generationInfo.isDirectory() || generationInfo.isSymbolicLink()) throw new Error('preview_not_found')
+  const canonicalGeneration = await realpath(generationRoot).catch(() => undefined)
+  if (canonicalGeneration === undefined) throw new Error('preview_not_found')
+  const candidate = join(canonicalGeneration, relativePdf)
+  const candidateInfo = await lstat(candidate).catch(() => undefined)
+  if (candidateInfo === undefined || !candidateInfo.isFile() || candidateInfo.isSymbolicLink()) throw new Error('preview_not_found')
+  const canonicalCandidate = await realpath(candidate).catch(() => undefined)
+  if (canonicalCandidate === undefined) throw new Error('preview_not_found')
+  const relativeCandidate = relativePath(canonicalGeneration, canonicalCandidate)
+  if (relativeCandidate.length === 0 || relativeCandidate.startsWith('..') || isAbsolute(relativeCandidate)) throw new Error('preview_path_invalid')
+  const maxBytes = config.maxPreviewBytes ?? 16 * 1024 * 1024
+  if (candidateInfo.size > maxBytes) throw new Error('preview_too_large')
+  const bytes = await readFile(canonicalCandidate)
+  if (bytes.byteLength > maxBytes) throw new Error('preview_too_large')
+  const expectedHash = typeof entry?.pdf_hash === 'string' ? entry.pdf_hash : undefined
+  if (expectedHash !== undefined && createHash('sha256').update(bytes).digest('hex') !== expectedHash) throw new Error('preview_invalid')
+  return { bytes, generationId }
+}
+
+/** Serve a PDF from Core's isolated generation without exposing its path. */
+async function handlePreviewRequest(
+  ctx: Context,
+  config: Config,
+  res: ServerResponse,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  problemId: string,
+): Promise<void> {
+  try {
+    const preview = await readPreviewPdf(ctx, config, workspace, session, problemId)
+    res.writeHead(200, {
+      'content-type': 'application/pdf',
+      'content-length': String(preview.bytes.byteLength),
+      'content-disposition': 'inline',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'x-probhub-generation': preview.generationId,
+    })
+    if (res.req.method === 'HEAD') res.end()
+    else res.end(preview.bytes)
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'preview_unavailable'
+    const status = code === 'preview_too_large' ? 413 : code === 'preview_invalid' || code === 'preview_path_invalid' ? 409 : 404
+    json(res, status, { ok: false, state: 'error', code, error: 'isolated preview PDF is unavailable' })
+  }
 }
 
 function projectReport(value: unknown): Record<string, unknown> {

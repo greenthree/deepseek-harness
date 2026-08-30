@@ -250,6 +250,16 @@ export async function cancelProbHubJob(
   return { cancelled: value.cancelled }
 }
 
+/** Check whether the current Session has a valid isolated preview PDF. */
+export async function checkProbHubPreview(currentSession: string, problemId: string): Promise<boolean> {
+  const params = new URLSearchParams({ sessionId: currentSession })
+  const response = await fetch(`/probhub/api/problems/${encodeURIComponent(problemId)}/preview?${params.toString()}`, {
+    method: 'HEAD',
+    headers: { accept: 'application/pdf' },
+  }).catch(() => undefined)
+  return response?.ok === true && (response.headers.get('content-type') ?? '').toLowerCase().startsWith('application/pdf')
+}
+
 const empty: ProbHubOverview = { state: 'unavailable', problems: [] }
 let snapshot: ProbHubOverview = empty
 let selectedId: string | undefined

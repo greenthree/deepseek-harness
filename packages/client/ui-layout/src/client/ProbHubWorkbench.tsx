@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ProbHubWorkbench.module.css'
-import { cancelProbHubJob, listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
+import { cancelProbHubJob, checkProbHubPreview, listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
 
 /** Read-only projection returned by the Harness ProbHub prefix route. */
 export interface ProbHubProblem {
@@ -174,6 +174,7 @@ function StateNotice({ overview }: { overview: ProbHubOverview }) {
 }
 
 function WorkbenchBody({
+  sessionId,
   problem,
   report,
   jobs,
@@ -191,7 +192,9 @@ function WorkbenchBody({
   onStartDelivery,
   cancelBusy,
   onCancelJob,
+  previewAvailable,
 }: {
+  sessionId: string | undefined
   problem: ProbHubProblem | undefined
   report: ProbHubProblemReport | undefined
   jobs: readonly JobView[]
@@ -209,6 +212,7 @@ function WorkbenchBody({
   onStartDelivery: (operation: ProbHubDeliveryOperation) => void
   cancelBusy: string | undefined
   onCancelJob: (jobId: string) => void
+  previewAvailable: boolean | undefined
 }) {
   if (problem === undefined) {
     return <StateNotice overview={EMPTY_OVERVIEW} />
@@ -329,13 +333,30 @@ function WorkbenchBody({
       </div>
     )
   }
-  return (
-    <div className={css.pdfPlaceholder}>
+  const previewUrl = sessionId !== undefined && problem.generation !== undefined && previewAvailable === true
+    ? `/probhub/api/problems/${encodeURIComponent(problem.id)}/preview?sessionId=${encodeURIComponent(sessionId)}`
+    : undefined
+  if (previewAvailable === undefined && problem.generation !== undefined) {
+    return <div className={css.pdfPlaceholder}>
       <div className={css.pdfIcon}>PDF</div>
-      <strong>试卷 PDF 预览</strong>
-      <p>PDF 由 ProbHub Core 生成。当前仅展示 generation 与可用性；正式构建仍需显式交付操作。</p>
-      <button type="button" disabled>打开只读预览</button>
+      <strong>正在检查隔离预览</strong>
+      <p>正在确认当前 generation 仍可安全读取。</p>
     </div>
+  }
+  return (
+    previewUrl === undefined
+      ? <div className={css.pdfPlaceholder}>
+        <div className={css.pdfIcon}>PDF</div>
+        <strong>试卷 PDF 预览</strong>
+        <p>{problem.generation === undefined ? '当前没有隔离 preview generation。请先完成 checkpoint、seal 和组装预览。' : '当前 generation 不可用或已过期，请重新组装预览。'}</p>
+      </div>
+      : <div className={css.pdfPreview}>
+        <div className={css.pdfPreviewHeader}>
+          <div><strong>隔离 preview generation</strong><small>{problem.generation}</small></div>
+          <span>只读 · 不发布正式产物</span>
+        </div>
+        <iframe className={css.pdfFrame} title={`${problem.id} 试卷 PDF 预览`} src={previewUrl} />
+      </div>
   )
 }
 
@@ -356,6 +377,8 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
   const deliveryRequest = useRef(0)
   const [cancelBusy, setCancelBusy] = useState<string | undefined>()
   const cancelRequest = useRef(0)
+  const [previewAvailable, setPreviewAvailable] = useState<boolean | undefined>()
+  const previewRequest = useRef(0)
   const appliedTabRequest = useRef(0)
   const editorRequest = useRef(0)
   const lastStableSession = useRef(sessionId)
@@ -381,12 +404,14 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     if (sessionChanged || problemChanged) {
       deliveryRequest.current += 1
       cancelRequest.current += 1
+      previewRequest.current += 1
       setEditor(undefined)
       setSourceTargets([])
       setDeliveryBusy(undefined)
       setDeliveryError(undefined)
       setDeliveryMessage(undefined)
       setCancelBusy(undefined)
+      setPreviewAvailable(undefined)
     }
     lastStableSession.current = sessionId
     if (selected?.id !== undefined) lastStableProblem.current = selected.id
@@ -497,6 +522,21 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
     setDeliveryMessage(result.cancelled === true ? `已请求取消任务 ${jobId}。` : `任务 ${jobId} 已结束。`)
   }
   useEffect(() => {
+    const targetSession = sessionId
+    const targetProblem = selected?.id
+    const targetGeneration = selected?.generation
+    const requestId = ++previewRequest.current
+    if (tab !== '试卷 PDF' || targetSession === undefined || targetProblem === undefined || targetGeneration === undefined) {
+      setPreviewAvailable(undefined)
+      return
+    }
+    setPreviewAvailable(undefined)
+    void checkProbHubPreview(targetSession, targetProblem).then((available) => {
+      if (requestId !== previewRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
+      setPreviewAvailable(available)
+    })
+  }, [selected?.generation, selected?.id, sessionId, tab])
+  useEffect(() => {
     if (tabRequest === undefined || tabRequest.sequence <= appliedTabRequest.current) return
     // The controller already rejects foreign identities, but retain the
     // component-side fence for remounts and stale snapshots: a location hint
@@ -529,6 +569,7 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
             {isNotice
               ? <StateNotice overview={overview} />
               : <WorkbenchBody
+                sessionId={sessionId}
                 problem={selected}
                 report={selectedReport}
                 jobs={jobs}
@@ -550,6 +591,7 @@ export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWo
                 onStartDelivery={(operation) => { void startDelivery(operation) }}
                 cancelBusy={cancelBusy}
                 onCancelJob={(jobId) => { void cancelJob(jobId) }}
+                previewAvailable={previewAvailable}
               />}
           </main>
         </div>

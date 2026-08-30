@@ -115,6 +115,22 @@ describe('ProbHub workbench report projection', () => {
     expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/jobs'))).toBe(true)
   })
 
+  it('shows the isolated preview PDF only when Core reports a generation', async () => {
+    vi.mocked(fetch).mockImplementation(async (_input, init) => init?.method === 'HEAD'
+      ? new Response(null, { status: 200, headers: { 'content-type': 'application/pdf' } })
+      : new Response(JSON.stringify({
+        state: 'ready', workspaceId: 'workspace-a',
+        problems: [{ id: 'A01', title: 'Alpha', status: 'current', generation: 'gen-1' }],
+      }), { status: 200 }))
+    await act(async () => { await probHubController.refresh('session-a') })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessionsWithJobs()} />)
+    await act(async () => { screen.getByRole('button', { name: '试卷 PDF' }).click() })
+    await waitFor(() => { expect(screen.getByTitle('A01 试卷 PDF 预览')).toBeTruthy() })
+    const frame = screen.getByTitle('A01 试卷 PDF 预览')
+    expect(frame.getAttribute('src')).toBe('/probhub/api/problems/A01/preview?sessionId=session-a')
+    expect(screen.getByText('隔离 preview generation')).toBeTruthy()
+  })
+
   it('cancels a running ProbHub job from the health task list', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockImplementation(async (input) => {
