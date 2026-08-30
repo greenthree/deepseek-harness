@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { probHubController } from '../src/client/probhub-controller.ts'
 import { ProbHubWorkbench, type ProbHubWorkbenchProps } from '../src/client/ProbHubWorkbench.tsx'
 import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 
 const SESSION = 'session-a' as SessionId
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.toString()
+  return input.url
+}
 
 function useSessionsWithJobs(jobsBySession: SessionListState['jobsBySession'] = {}): ProbHubWorkbenchProps['useSessions'] {
   return select => select({
@@ -125,5 +131,36 @@ describe('ProbHub workbench report projection', () => {
     })
     render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessions} />)
     expect(screen.getByRole('button', { name: '健康与评测' }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('loads the statement editor through the source bridge with the Core revision', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = requestUrl(input)
+      if (url.includes('/probhub/api/source')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          state: 'ready',
+          source: { target: 'statement', content: '# Editable\n', revision: 'a'.repeat(64), bytes: 11 },
+          impact: { source: true, data: false, formalArtifacts: true },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      void init
+      return new Response(JSON.stringify({
+        state: 'ready', workspaceId: 'workspace-a',
+        problems: [{ id: 'A01', title: 'Alpha', judge: 'standard', status: 'current', revision: 'a'.repeat(64) }],
+        report: { ok: true, problems: [{ id: 'A01', tests: { total: { cases: 1 } } }] },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    await act(async () => { await probHubController.refresh('session-a') })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessionsWithJobs()} />)
+
+    await act(async () => { screen.getByRole('button', { name: '编辑题面' }).click() })
+    const editor = await screen.findByRole('textbox', { name: '题面编辑器' })
+    expect((editor as HTMLTextAreaElement).value).toBe('# Editable\n')
+    expect(screen.getByText(/revision a{12}/)).toBeTruthy()
+    await act(async () => { fireEvent.change(editor, { target: { value: '# Changed\n' } }) })
+    expect(screen.getByRole('button', { name: '保存题面' }).hasAttribute('disabled')).toBe(false)
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/source'))).toBe(true)
   })
 })

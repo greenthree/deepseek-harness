@@ -25,6 +25,119 @@ export interface ProbHubControllerState {
   readonly requestTab: (tab: ProbHubTab, sessionId?: string, problemId?: string) => void
 }
 
+/** One editable Schema v1 source document returned by the Host bridge. */
+export interface ProbHubSourceDocument {
+  readonly target: string
+  readonly content: string
+  readonly revision: string
+  readonly bytes: number
+  readonly impact: { readonly source: boolean; readonly data: boolean; readonly formalArtifacts: boolean }
+}
+
+/** Structured source edit failure; callers decide how to render it. */
+export interface ProbHubSourceError {
+  readonly code: string
+  readonly message: string
+  readonly expectedRevision?: string
+  readonly currentRevision?: string
+}
+
+function parseSourceImpact(value: unknown): ProbHubSourceDocument['impact'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const impact = value as Record<string, unknown>
+  return typeof impact.source === 'boolean' && typeof impact.data === 'boolean' && typeof impact.formalArtifacts === 'boolean'
+    ? { source: impact.source, data: impact.data, formalArtifacts: impact.formalArtifacts }
+    : undefined
+}
+
+/** Read one allowlisted source target through the same-origin Host bridge. */
+export async function readProbHubSource(
+  currentSession: string,
+  problemId: string,
+  target = 'statement',
+): Promise<{ readonly document?: ProbHubSourceDocument; readonly error?: ProbHubSourceError }> {
+  const params = new URLSearchParams({ sessionId: currentSession, problemId, target })
+  const response = await fetch(`/probhub/api/source?${params.toString()}`, { headers: { accept: 'application/json' } }).catch(() => undefined)
+  if (response === undefined) return { error: { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' } }
+  let body: unknown
+  try { body = await response.json() } catch { return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效响应' } } }
+  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    const value = body as Record<string, unknown> | null
+    return {
+      error: {
+        code: typeof value?.code === 'string' ? value.code : 'source_read_failed',
+        message: typeof value?.error === 'string' ? value.error : '无法读取源文件',
+      },
+    }
+  }
+  const value = body as Record<string, unknown>
+  const source = value.source
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return { error: { code: 'source_invalid_response', message: '源文件服务缺少 source 响应' } }
+  const record = source as Record<string, unknown>
+  if (typeof record.target !== 'string' || typeof record.content !== 'string' || typeof record.revision !== 'string' || typeof record.bytes !== 'number') {
+    return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整文档' } }
+  }
+  const impact = parseSourceImpact(value.impact)
+  if (impact === undefined) return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整影响预览' } }
+  return {
+    document: {
+      target: record.target,
+      content: record.content,
+      revision: record.revision,
+      bytes: record.bytes,
+      impact,
+    },
+  }
+}
+
+/** Save one allowlisted source target using an exact Core source revision. */
+export async function saveProbHubSource(
+  currentSession: string,
+  problemId: string,
+  target: string,
+  content: string,
+  expectedRevision: string,
+): Promise<{ readonly document?: ProbHubSourceDocument; readonly error?: ProbHubSourceError }> {
+  const params = new URLSearchParams({ sessionId: currentSession, problemId })
+  const response = await fetch(`/probhub/api/source?${params.toString()}`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ problemId, target, content, expectedRevision }),
+  }).catch(() => undefined)
+  if (response === undefined) return { error: { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' } }
+  let body: unknown
+  try { body = await response.json() } catch { return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效响应' } } }
+  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    const value = body as Record<string, unknown> | null
+    return {
+      error: {
+        code: typeof value?.code === 'string' ? value.code : response.status === 409 ? 'source_conflict' : 'source_write_failed',
+        message: typeof value?.error === 'string' ? value.error : '保存源文件失败',
+        ...(typeof value?.expectedRevision === 'string' ? { expectedRevision: value.expectedRevision } : {}),
+        ...(typeof value?.currentRevision === 'string' ? { currentRevision: value.currentRevision } : {}),
+      },
+    }
+  }
+  const value = body as Record<string, unknown>
+  const source = value.source
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return { error: { code: 'source_invalid_response', message: '源文件服务缺少 source 响应' } }
+  const record = source as Record<string, unknown>
+  if (typeof record.target !== 'string' || typeof record.revision !== 'string' || typeof record.bytes !== 'number') {
+    return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整保存结果' } }
+  }
+  const impact = parseSourceImpact(value.impact)
+  if (impact === undefined) return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整影响预览' } }
+  return {
+    document: {
+      target: record.target,
+      content,
+      revision: record.revision,
+      bytes: record.bytes,
+      impact,
+    },
+  }
+}
+
 const empty: ProbHubOverview = { state: 'unavailable', problems: [] }
 let snapshot: ProbHubOverview = empty
 let selectedId: string | undefined

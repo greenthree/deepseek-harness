@@ -23,6 +23,15 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ProbHubTab, ProbHubTabRequestReason } from '@deepseek-ai/dsh-api-remotes/types'
 import type {} from '@deepseek-ai/dsh-api-remotes'
+import {
+  isSourceRevision,
+  parseSourceTarget,
+  readSource,
+  resolveSourcePath,
+  sourceImpact,
+  sourceTargetId,
+  writeSource,
+} from './source-edit.ts'
 
 /** Core command configuration for the bridge. */
 export interface Config {
@@ -32,12 +41,15 @@ export interface Config {
   maxOutputBytes?: number
   /** Maximum time spent waiting for a read-only Core operation. */
   timeoutMs?: number
+  /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
+  maxSourceBytes?: number
 }
 
 export const Config: z<Config> = z.object({
   command: z.string().default('probhub/bin/probhub.js'),
   maxOutputBytes: z.natural().min(1024).default(1024 * 1024),
   timeoutMs: z.natural().min(1).default(15_000),
+  maxSourceBytes: z.natural().min(1024).max(8 * 1024 * 1024).default(512 * 1024),
 })
 
 /** Operations exposed by the background ProbHub Core producer. */
@@ -94,6 +106,10 @@ interface BridgeResponse {
   readonly problem?: { readonly id: string; readonly revision?: string; readonly generation?: string }
   readonly code?: string
   readonly error?: string
+  readonly source?: { readonly target: string; readonly content?: string; readonly revision?: string; readonly bytes?: number }
+  readonly impact?: { readonly source: boolean; readonly data: boolean; readonly formalArtifacts: boolean }
+  readonly expectedRevision?: string
+  readonly currentRevision?: string
 }
 
 interface SessionRef {
@@ -157,19 +173,21 @@ export function emitProbHubTabRequest(
   }
 }
 
-/** Registers the `/probhub` read-only route family. */
+/** Registers the `/probhub` projection and revision-guarded source route family. */
 export function apply(ctx: Context, config: Config = {}): void {
   const resolved: Config = {
     command: config.command ?? 'probhub/bin/probhub.js',
     maxOutputBytes: config.maxOutputBytes ?? 1024 * 1024,
     timeoutMs: config.timeoutMs ?? 15_000,
+    maxSourceBytes: config.maxSourceBytes ?? 512 * 1024,
   }
   const selections = new Map<string, ProblemSelection>()
   const latestSelections = new Map<string, number>()
+  const sourceLocks = new Map<string, Promise<void>>()
   const route: WebRoute = {
     kind: 'prefix',
     path: PROBHUB_PATH,
-    handler: async (req, res) => handleRequest(ctx, resolved, req, res, selections, latestSelections),
+    handler: async (req, res) => handleRequest(ctx, resolved, req, res, selections, latestSelections, sourceLocks),
   }
   ctx.effect(() => {
     const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
@@ -182,6 +200,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       for (const selection of selections.values()) selection.dispose()
       selections.clear()
       latestSelections.clear()
+      sourceLocks.clear()
       disposeRoute()
     }
   }, 'probhub: read-only routes')
@@ -199,12 +218,16 @@ async function handleRequest(
   res: ServerResponse,
   selections: Map<string, ProblemSelection>,
   latestSelections: Map<string, number>,
+  sourceLocks: Map<string, Promise<void>>,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost')
   const isContextRoute = url.pathname === `${PROBHUB_API_PATH}/context`
-  const allowed = isContextRoute ? req.method === 'POST' : req.method === 'GET' || req.method === 'HEAD'
+  const isSourceRoute = url.pathname === `${PROBHUB_API_PATH}/source`
+  const allowed = isContextRoute || (isSourceRoute && req.method === 'POST')
+    ? req.method === 'POST'
+    : req.method === 'GET' || req.method === 'HEAD'
   if (!allowed) {
-    json(res, 405, { ok: false, state: 'error', code: 'method_not_allowed', error: isContextRoute ? 'POST is required' : 'GET is required' })
+    json(res, 405, { ok: false, state: 'error', code: 'method_not_allowed', error: isContextRoute || isSourceRoute ? 'POST is required' : 'GET is required' })
     return
   }
   if (url.pathname === PROBHUB_PATH || url.pathname === `${PROBHUB_PATH}/`) {
@@ -250,6 +273,10 @@ async function handleRequest(
     await bindProblemSelection(ctx, config, res, workspace.value, session, selections, latestSelections, url)
     return
   }
+  if (isSourceRoute) {
+    await handleSourceRequest(ctx, config, req, res, workspace.value, session, url, sourceLocks)
+    return
+  }
   const operation = url.pathname.slice(`${PROBHUB_API_PATH}/`.length)
   if (operation !== 'overview' && operation !== 'status' && operation !== 'lint') {
     const problemMatch = /^problems\/([^/]+)\/(status|lint|report)$/.exec(operation)
@@ -287,6 +314,187 @@ async function handleRequest(
     ...(adapterOk ? {} : { code: status?.error ?? lint?.error ?? 'core_failed' }),
   }
   json(res, body.state === 'migration_required' ? 409 : adapterOk ? 200 : 502, body)
+}
+
+interface SourceWritePayload {
+  readonly problemId?: unknown
+  readonly target?: unknown
+  readonly content?: unknown
+  readonly expectedRevision?: unknown
+}
+
+/** Read and validate one bounded JSON source-edit request. */
+async function readSourceWritePayload(req: IncomingMessage, maxBytes: number): Promise<SourceWritePayload> {
+  const chunks: Buffer[] = []
+  let size = 0
+  try {
+    for await (const chunk of req) {
+      const bytes = Buffer.from(chunk as Uint8Array)
+      size += bytes.byteLength
+      if (size > maxBytes + 8192) throw new Error('source request exceeds the workbench size limit')
+      chunks.push(bytes)
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'source request exceeds the workbench size limit') throw error
+    throw new Error('source request body could not be read')
+  }
+  let value: unknown
+  try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new Error('source request body must be valid JSON') }
+  if (!isRecord(value)) throw new Error('source request body must be an object')
+  return value
+}
+
+/** Execute one source write while serializing edits within this Host process. */
+async function withSourceLock<T>(locks: Map<string, Promise<void>>, key: string, work: () => Promise<T>): Promise<T> {
+  const previous = locks.get(key)
+  let release!: () => void
+  const slot = new Promise<void>((resolve) => { release = resolve })
+  locks.set(key, slot)
+  if (previous !== undefined) await previous
+  try {
+    return await work()
+  } finally {
+    release()
+    if (locks.get(key) === slot) locks.delete(key)
+  }
+}
+
+/** Read the Core source revision for one problem; the Core remains authoritative. */
+async function currentProblemRevision(
+  ctx: Context,
+  config: Config,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  problemId: string,
+): Promise<{ revision?: string; error?: string }> {
+  const result = await runCore(ctx, config, workspace.cwd, 'status', [], session.session)
+  if (!result.adapterOk) return { error: result.error ?? 'core_unavailable' }
+  const revision = problemIdentity(result.value, problemId).revision
+  return revision === undefined ? { error: 'problem_not_found' } : { revision }
+}
+
+/** Handle GET/POST for the explicit, revision-guarded source editor. */
+async function handleSourceRequest(
+  ctx: Context,
+  config: Config,
+  req: IncomingMessage,
+  res: ServerResponse,
+  workspace: ResolvedWorkspace,
+  session: SessionRef,
+  url: URL,
+  sourceLocks: Map<string, Promise<void>>,
+): Promise<void> {
+  const problemId = url.searchParams.get('problemId')
+  if (problemId === null || !PROBLEM_ID.test(problemId)) {
+    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
+    return
+  }
+  let payload: SourceWritePayload | undefined
+  if (req.method === 'POST') {
+    try { payload = await readSourceWritePayload(req, config.maxSourceBytes ?? 512 * 1024) } catch (error) {
+      json(res, 400, { ok: false, state: 'error', code: 'source_request_invalid', error: error instanceof Error ? error.message : 'source request body is invalid' })
+      return
+    }
+    if (payload.problemId !== undefined && payload.problemId !== problemId) {
+      json(res, 409, { ok: false, state: 'error', code: 'problem_mismatch', error: 'request problem does not match the selected Session problem' })
+      return
+    }
+  }
+  const target = parseSourceTarget(payload?.target ?? url.searchParams.get('target'))
+  if (target === undefined) {
+    json(res, 400, { ok: false, state: 'error', code: 'source_target_invalid', error: 'a supported source target is required' })
+    return
+  }
+  let sourcePath: string
+  try { sourcePath = await resolveSourcePath(workspace.cwd, problemId, target) } catch (error) {
+    json(res, 400, { ok: false, state: 'error', code: 'source_target_invalid', error: error instanceof Error ? error.message : 'source target is invalid' })
+    return
+  }
+  const maxBytes = config.maxSourceBytes ?? 512 * 1024
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    try {
+      const file = await readSource(sourcePath, maxBytes)
+      const revision = await currentProblemRevision(ctx, config, workspace, session, problemId)
+      if (revision.error !== undefined) {
+        json(res, 503, { ok: false, state: 'error', code: revision.error, error: 'Core source revision is unavailable' })
+        return
+      }
+      json(res, 200, {
+        ok: true,
+        state: 'ready',
+        source: {
+          target: sourceTargetId(target), content: file.content, bytes: file.bytes,
+          ...(revision.revision === undefined ? {} : { revision: revision.revision }),
+        },
+        impact: sourceImpact(target),
+      })
+    } catch (error) {
+      json(res, 400, { ok: false, state: 'error', code: 'source_read_failed', error: error instanceof Error ? error.message : 'source target could not be read' })
+    }
+    return
+  }
+
+  const sandboxPolicy = ctx.get('sandboxPolicy')
+  if (session.session === undefined || sandboxPolicy === undefined) {
+    json(res, 403, { ok: false, state: 'error', code: 'workspace_write_required', error: 'a live workspace-write Session is required to save source' })
+    return
+  }
+  let policy: ReturnType<SandboxPolicyService['resolve']>
+  try { policy = sandboxPolicy.resolve({ session: session.session }) } catch {
+    json(res, 503, { ok: false, state: 'error', code: 'workspace_write_unavailable', error: 'workspace-write policy is unavailable' })
+    return
+  }
+  if (policy.mode !== 'workspace-write') {
+    json(res, 403, { ok: false, state: 'error', code: 'workspace_write_required', error: 'switch the current Session to workspace-write before saving source' })
+    return
+  }
+  const content = payload?.content
+  const expectedRevision = payload?.expectedRevision
+  if (typeof content !== 'string' || !isSourceRevision(expectedRevision)) {
+    json(res, 400, { ok: false, state: 'error', code: 'source_revision_required', error: 'content and expectedRevision are required' })
+    return
+  }
+  const lockKey = `${workspace.cwd}\u0000${problemId}`
+  await withSourceLock(sourceLocks, lockKey, async () => {
+    const current = await currentProblemRevision(ctx, config, workspace, session, problemId)
+    if (current.error !== undefined || current.revision === undefined) {
+      json(res, 503, { ok: false, state: 'error', code: current.error ?? 'core_unavailable', error: 'Core source revision is unavailable' })
+      return
+    }
+    if (current.revision !== expectedRevision) {
+      json(res, 409, {
+        ok: false,
+        state: 'error',
+        code: 'source_conflict',
+        error: 'source changed outside this editor; reload before saving',
+        expectedRevision,
+        currentRevision: current.revision,
+      })
+      return
+    }
+    try {
+      const before = await readSource(sourcePath, maxBytes)
+      if (before.content === content) {
+        json(res, 200, { ok: true, state: 'ready', source: { target: sourceTargetId(target), bytes: before.bytes, revision: current.revision }, impact: sourceImpact(target) })
+        return
+      }
+      await writeSource(sourcePath, content, maxBytes)
+    } catch (error) {
+      json(res, 400, { ok: false, state: 'error', code: 'source_write_failed', error: error instanceof Error ? error.message : 'source target could not be written' })
+      return
+    }
+    const next = await currentProblemRevision(ctx, config, workspace, session, problemId)
+    if (next.error !== undefined || next.revision === undefined) {
+      json(res, 502, { ok: false, state: 'error', code: 'source_saved_revision_unavailable', error: 'source was saved but Core could not compute its new revision' })
+      return
+    }
+    json(res, 200, {
+      ok: true,
+      state: 'ready',
+      source: { target: sourceTargetId(target), bytes: Buffer.byteLength(content, 'utf8'), revision: next.revision },
+      impact: sourceImpact(target),
+    })
+  })
 }
 
 /**

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -9,7 +9,7 @@ import { type Config, PROBHUB_API_PATH, PROBHUB_PATH } from '../src/index.ts'
 
 const { apply } = probhub
 
-interface FakeRequest { method: string; url: string }
+interface FakeRequest { method: string; url: string; body?: string; [Symbol.asyncIterator]?: () => AsyncIterator<Buffer> }
 interface FakeResponse {
   req: FakeRequest
   status: number
@@ -35,6 +35,14 @@ function response(method = 'GET'): { response: FakeResponse; body: () => string 
     headers: {} as Record<string, string>,
   }
   return { response, body: () => output }
+}
+
+function request(method: string, url: string, body?: string): FakeRequest {
+  const value: FakeRequest = { method, url, ...(body === undefined ? {} : { body }) }
+  if (body !== undefined) {
+    value[Symbol.asyncIterator] = async function* () { yield Buffer.from(body, 'utf8') }
+  }
+  return value
 }
 
 async function mount(config?: Partial<Config>): Promise<{ ctx: Context; route: CapturedRoute }> {
@@ -235,6 +243,96 @@ describe('host ProbHub bridge', () => {
       await route.handler({ method: 'POST', url: `${PROBHUB_API_PATH}/context?sessionId=${sessionId}&problemId=A01&selection=1` }, stale.response)
       expect(stale.response.status).toBe(409)
       expect(JSON.parse(stale.body())).toMatchObject({ ok: false, code: 'selection_stale' })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('reads and atomically saves an allowed source target with a Core revision fence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-source-'))
+    mkdirSync(join(root, '.probhub'))
+    mkdirSync(join(root, 'A01', 'code'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    writeFileSync(join(root, 'A01', 'probhub.yaml'), 'id: A01\n')
+    writeFileSync(join(root, 'A01', 'problem.md'), '# Before\n')
+    try {
+      const { ctx, route } = await mount({ command: join(root, 'fake-probhub.js') })
+      const sessionId = 'source-session'
+      const attached = { id: sessionId, header: { cwd: root } }
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? attached : undefined } as never)
+      ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'workspace-write', workspaceRoot: root }) } as never)
+      ctx.provide('sandbox', { confine: (argv: string[]) => ({ argv, enforcement: 'full' }) } as never)
+      let statusCalls = 0
+      const initialRevision = 'a'.repeat(64)
+      const nextRevision = 'b'.repeat(64)
+      ctx.provide('subprocess', {
+        spawn: (_spec: SpawnSpec) => {
+          statusCalls += 1
+          const revision = statusCalls < 3 ? initialRevision : nextRevision
+          const reader = {
+            readFrom: () => ({
+              text: JSON.stringify({ ok: true, problems: { A01: { source_hash: revision } } }),
+              lossy: false,
+            }),
+          }
+          return {
+            done: Promise.resolve({ exitCode: 0, signal: null }),
+            waitForExit: async () => true,
+            collected: { stdout: reader, stderr: reader },
+          }
+        },
+      } as never)
+
+      const read = response()
+      await route.handler(request('GET', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01&target=statement`), read.response)
+      expect(read.response.status).toBe(200)
+      expect(JSON.parse(read.body())).toMatchObject({
+        ok: true,
+        source: { target: 'statement', content: '# Before\n', revision: initialRevision },
+        impact: { source: true, data: false, formalArtifacts: true },
+      })
+
+      const save = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01`, JSON.stringify({
+        target: 'statement', content: '# After\n', expectedRevision: initialRevision,
+      })), save.response)
+      expect(save.response.status).toBe(200)
+      expect(JSON.parse(save.body())).toMatchObject({ ok: true, source: { target: 'statement', revision: nextRevision } })
+      expect(readFileSync(join(root, 'A01', 'problem.md'), 'utf8')).toBe('# After\n')
+
+      const stale = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01`, JSON.stringify({
+        target: 'statement', content: '# Lost update\n', expectedRevision: initialRevision,
+      })), stale.response)
+      expect(stale.response.status).toBe(409)
+      expect(JSON.parse(stale.body())).toMatchObject({ ok: false, code: 'source_conflict', expectedRevision: initialRevision })
+      expect(readFileSync(join(root, 'A01', 'problem.md'), 'utf8')).toBe('# After\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects source writes without a live workspace-write Session or with traversal targets', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-source-deny-'))
+    mkdirSync(join(root, '.probhub'))
+    mkdirSync(join(root, 'A01'), { recursive: true })
+    writeFileSync(join(root, '.probhub', 'workspace.yaml'), 'schema_version: 1\nproblems: [A01]\n')
+    writeFileSync(join(root, 'A01', 'problem.md'), '# Before\n')
+    try {
+      const { ctx, route } = await mount({ command: join(root, 'fake-probhub.js') })
+      const sessionId = 'source-deny-session'
+      ctx.provide('sessions', { get: (id: string) => id === sessionId ? { header: { cwd: root } } : undefined } as never)
+      const denied = response('POST')
+      await route.handler(request('POST', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01`, JSON.stringify({
+        target: 'statement', content: '# After\n', expectedRevision: 'a'.repeat(64),
+      })), denied.response)
+      expect(denied.response.status).toBe(403)
+      expect(JSON.parse(denied.body())).toMatchObject({ ok: false, code: 'workspace_write_required' })
+
+      const traversal = response('GET')
+      await route.handler(request('GET', `${PROBHUB_API_PATH}/source?sessionId=${sessionId}&problemId=A01&target=code%3A..%2Fescape`), traversal.response)
+      expect(traversal.response.status).toBe(400)
+      expect(JSON.parse(traversal.body())).toMatchObject({ ok: false, code: 'source_target_invalid' })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
