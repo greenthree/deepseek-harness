@@ -880,13 +880,17 @@ async function readPreviewPdf(
   const problems = manifest !== undefined && Array.isArray(manifest.problems) ? manifest.problems : []
   const entry = problems.find((item): item is Record<string, unknown> => isRecord(item) && item.problem_id === problemId)
   const relativePdf = typeof entry?.pdf === 'string' ? entry.pdf : undefined
+  const expectedHash = typeof entry?.pdf_hash === 'string' ? entry.pdf_hash : undefined
   if (generationId === undefined || relativePdf === undefined || relativePdf.length === 0) throw new Error('preview_not_found')
+  if (!relativePdf.toLowerCase().endsWith('.pdf') || expectedHash === undefined || !/^[a-f0-9]{64}$/u.test(expectedHash)) throw new Error('preview_invalid')
   if (isAbsolute(relativePdf) || relativePdf.split(/[\\/]/u).includes('..')) throw new Error('preview_path_invalid')
   const generationRoot = join(workspace.cwd, '.probhub', 'generations', generationId)
   const generationInfo = await lstat(generationRoot).catch(() => undefined)
   if (generationInfo === undefined || !generationInfo.isDirectory() || generationInfo.isSymbolicLink()) throw new Error('preview_not_found')
   const canonicalGeneration = await realpath(generationRoot).catch(() => undefined)
   if (canonicalGeneration === undefined) throw new Error('preview_not_found')
+  const relativeGeneration = relativePath(workspace.cwd, canonicalGeneration)
+  if (relativeGeneration.length === 0 || relativeGeneration.startsWith('..') || isAbsolute(relativeGeneration)) throw new Error('preview_path_invalid')
   const candidate = join(canonicalGeneration, relativePdf)
   const candidateInfo = await lstat(candidate).catch(() => undefined)
   if (candidateInfo === undefined || !candidateInfo.isFile() || candidateInfo.isSymbolicLink()) throw new Error('preview_not_found')
@@ -898,8 +902,7 @@ async function readPreviewPdf(
   if (candidateInfo.size > maxBytes) throw new Error('preview_too_large')
   const bytes = await readFile(canonicalCandidate)
   if (bytes.byteLength > maxBytes) throw new Error('preview_too_large')
-  const expectedHash = typeof entry?.pdf_hash === 'string' ? entry.pdf_hash : undefined
-  if (expectedHash !== undefined && createHash('sha256').update(bytes).digest('hex') !== expectedHash) throw new Error('preview_invalid')
+  if (createHash('sha256').update(bytes).digest('hex') !== expectedHash) throw new Error('preview_invalid')
   return { bytes, generationId }
 }
 
