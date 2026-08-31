@@ -159,6 +159,13 @@ interface ProblemSelection {
 
 const PROBLEM_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
+function readProblemId(url: URL, res: ServerResponse): string | undefined {
+  const problemId = url.searchParams.get('problemId')
+  if (problemId !== null && PROBLEM_ID.test(problemId)) return problemId
+  json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
+  return undefined
+}
+
 function isProbHubTab(value: unknown): value is ProbHubTab {
   return value === 'statement' || value === 'health' || value === 'pdf'
 }
@@ -459,11 +466,8 @@ async function handleSourceTargetsRequest(
   workspace: ResolvedWorkspace,
   url: URL,
 ): Promise<void> {
-  const problemId = url.searchParams.get('problemId')
-  if (problemId === null || !PROBLEM_ID.test(problemId)) {
-    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
-    return
-  }
+  const problemId = readProblemId(url, res)
+  if (problemId === undefined) return
   try {
     const targets = await listSourceTargets(workspace.cwd, problemId, config.maxSourceBytes ?? 512 * 1024)
     json(res, 200, { ok: true, state: 'ready', targets })
@@ -619,11 +623,8 @@ async function handleSourceRequest(
   url: URL,
   sourceLocks: Map<string, Promise<void>>,
 ): Promise<void> {
-  const problemId = url.searchParams.get('problemId')
-  if (problemId === null || !PROBLEM_ID.test(problemId)) {
-    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
-    return
-  }
+  const problemId = readProblemId(url, res)
+  if (problemId === undefined) return
   let payload: SourceWritePayload | undefined
   if (req.method === 'POST') {
     try { payload = await readSourceWritePayload(req, config.maxSourceBytes ?? 512 * 1024) } catch (error) {
@@ -747,11 +748,8 @@ async function bindProblemSelection(
   latestSelections: Map<string, number>,
   url: URL,
 ): Promise<void> {
-  const problemId = url.searchParams.get('problemId')
-  if (problemId === null || !PROBLEM_ID.test(problemId)) {
-    json(res, 400, { ok: false, state: 'error', code: 'problem_invalid', error: 'a valid Schema v1 problem id is required' })
-    return
-  }
+  const problemId = readProblemId(url, res)
+  if (problemId === undefined) return
   const rawSequence = url.searchParams.get('selection')
   const sequence = rawSequence === null ? undefined : Number(rawSequence)
   if (sequence === undefined || !Number.isSafeInteger(sequence) || sequence < 1) {

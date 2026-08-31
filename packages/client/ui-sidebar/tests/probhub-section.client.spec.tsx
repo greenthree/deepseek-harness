@@ -8,6 +8,13 @@ function response(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as unknown as Response
 }
 
+function requestUrl(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value instanceof URL) return value.href
+  if (typeof Request !== 'undefined' && value instanceof Request) return value.url
+  return ''
+}
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
@@ -39,10 +46,10 @@ describe('ProbHub sidebar section', () => {
     probHubController.select('A01')
     await act(async () => { await new Promise<void>(resolve => setTimeout(resolve, 0)) })
     const contextCall = fetchMock.mock.calls.find(([url, init]) => (
-      String(url).includes('/probhub/api/context?') && init?.method === 'POST'
+      requestUrl(url).includes('/probhub/api/context?') && init?.method === 'POST'
     ))
-    expect(contextCall?.[0]).toContain('sessionId=session-a')
-    expect(contextCall?.[0]).toContain('problemId=A01')
+    expect(requestUrl(contextCall?.[0])).toContain('sessionId=session-a')
+    expect(requestUrl(contextCall?.[0])).toContain('problemId=A01')
   })
 
   it('drops an older Session response when a newer Session wins', async () => {

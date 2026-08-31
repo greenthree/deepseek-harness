@@ -499,7 +499,7 @@ describe('npm release workflows', () => {
 
     expect(packJob.name).toBe('Pack ProbHub tarballs')
     expect(publishPack.name).toBe('Pack ProbHub tarballs')
-    const packCommands = [...packJob.steps, ...publishPack.steps]
+    const packCommands = [...packJob.steps.filter(isRecord), ...publishPack.steps.filter(isRecord)]
       .filter(isRecord)
       .map(step => step.run)
       .filter((run): run is string => typeof run === 'string')

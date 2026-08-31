@@ -328,6 +328,86 @@ function parseSourceTarget(value: unknown): ProbHubSourceTarget | undefined {
   return { target: record.target, kind, name, bytes: record.bytes }
 }
 
+interface ProbHubJsonResponse {
+  readonly response: Response
+  readonly body: unknown
+}
+
+interface ProbHubJsonFailure {
+  readonly error: ProbHubSourceError
+}
+
+interface ProbHubJsonRecord {
+  readonly response: Response
+  readonly value: Record<string, unknown>
+}
+
+async function fetchProbHubJson(
+  input: RequestInfo,
+  init: RequestInit,
+  unavailable: ProbHubSourceError,
+  invalid: ProbHubSourceError,
+): Promise<ProbHubJsonResponse | ProbHubJsonFailure> {
+  const response = await fetch(input, init).catch(() => undefined)
+  if (response === undefined) return { error: unavailable }
+  try {
+    return { response, body: await response.json() }
+  } catch {
+    return { error: invalid }
+  }
+}
+
+async function fetchProbHubRecord(
+  input: RequestInfo,
+  init: RequestInit,
+  unavailable: ProbHubSourceError,
+  invalid: ProbHubSourceError,
+  failed: ProbHubSourceError & { readonly conflictCode?: string },
+): Promise<ProbHubJsonRecord | ProbHubJsonFailure> {
+  const result = await fetchProbHubJson(input, init, unavailable, invalid)
+  if ('error' in result) return result
+  const { response, body } = result
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    if (response.ok) return { error: invalid }
+    const code = response.status === 409 && failed.conflictCode !== undefined
+      ? failed.conflictCode
+      : failed.code
+    return { error: { code, message: failed.message } }
+  }
+  const value = body as Record<string, unknown>
+  if (!response.ok) {
+    return {
+      error: {
+        code: typeof value.code === 'string' ? value.code : response.status === 409 && failed.conflictCode !== undefined ? failed.conflictCode : failed.code,
+        message: typeof value.error === 'string' ? value.error : failed.message,
+        ...(typeof value.expectedRevision === 'string' ? { expectedRevision: value.expectedRevision } : {}),
+        ...(typeof value.currentRevision === 'string' ? { currentRevision: value.currentRevision } : {}),
+      },
+    }
+  }
+  return { response, value }
+}
+
+interface ParsedSourceRecord {
+  readonly target: string
+  readonly content?: string
+  readonly revision: string
+  readonly bytes: number
+}
+
+function parseSourceRecord(value: unknown, requireContent: boolean): ParsedSourceRecord | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.target !== 'string' || typeof record.revision !== 'string' || typeof record.bytes !== 'number') return undefined
+  if (requireContent && typeof record.content !== 'string') return undefined
+  return {
+    target: record.target,
+    revision: record.revision,
+    bytes: record.bytes,
+    ...(typeof record.content === 'string' ? { content: record.content } : {}),
+  }
+}
+
 /** List the Host-approved source files for one problem.
  * @param currentSession - Current Harness Session id.
  * @param problemId - Schema v1 problem id.
@@ -338,15 +418,15 @@ export async function listProbHubSourceTargets(
   problemId: string,
 ): Promise<{ readonly targets?: readonly ProbHubSourceTarget[]; readonly error?: ProbHubSourceError }> {
   const params = new URLSearchParams({ sessionId: currentSession, problemId })
-  const response = await fetch(`/probhub/api/source-targets?${params.toString()}`, { headers: { accept: 'application/json' } }).catch(() => undefined)
-  if (response === undefined) return { error: { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' } }
-  let body: unknown
-  try { body = await response.json() } catch { return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效响应' } } }
-  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
-    const value = body as Record<string, unknown> | null
-    return { error: { code: typeof value?.code === 'string' ? value.code : 'source_targets_failed', message: typeof value?.error === 'string' ? value.error : '无法读取源文件列表' } }
-  }
-  const rawTargets = (body as Record<string, unknown>).targets
+  const result = await fetchProbHubRecord(
+    `/probhub/api/source-targets?${params.toString()}`,
+    { headers: { accept: 'application/json' } },
+    { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' },
+    { code: 'source_invalid_response', message: '源文件服务返回了无效响应' },
+    { code: 'source_targets_failed', message: '无法读取源文件列表' },
+  )
+  if ('error' in result) return { error: result.error }
+  const rawTargets = result.value.targets
   if (!Array.isArray(rawTargets) || rawTargets.length > 512) return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效目标列表' } }
   const targets = rawTargets.flatMap((item) => {
     const target = parseSourceTarget(item)
@@ -368,24 +448,17 @@ export async function readProbHubSource(
   target = 'statement',
 ): Promise<{ readonly document?: ProbHubSourceDocument; readonly error?: ProbHubSourceError }> {
   const params = new URLSearchParams({ sessionId: currentSession, problemId, target })
-  const response = await fetch(`/probhub/api/source?${params.toString()}`, { headers: { accept: 'application/json' } }).catch(() => undefined)
-  if (response === undefined) return { error: { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' } }
-  let body: unknown
-  try { body = await response.json() } catch { return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效响应' } } }
-  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
-    const value = body as Record<string, unknown> | null
-    return {
-      error: {
-        code: typeof value?.code === 'string' ? value.code : 'source_read_failed',
-        message: typeof value?.error === 'string' ? value.error : '无法读取源文件',
-      },
-    }
-  }
-  const value = body as Record<string, unknown>
-  const source = value.source
-  if (source === null || typeof source !== 'object' || Array.isArray(source)) return { error: { code: 'source_invalid_response', message: '源文件服务缺少 source 响应' } }
-  const record = source as Record<string, unknown>
-  if (typeof record.target !== 'string' || typeof record.content !== 'string' || typeof record.revision !== 'string' || typeof record.bytes !== 'number') {
+  const result = await fetchProbHubRecord(
+    `/probhub/api/source?${params.toString()}`,
+    { headers: { accept: 'application/json' } },
+    { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' },
+    { code: 'source_invalid_response', message: '源文件服务返回了无效响应' },
+    { code: 'source_read_failed', message: '无法读取源文件' },
+  )
+  if ('error' in result) return { error: result.error }
+  const value = result.value
+  const record = parseSourceRecord(value.source, true)
+  if (record === undefined || record.content === undefined) {
     return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整文档' } }
   }
   const impact = parseSourceImpact(value.impact)
@@ -417,30 +490,21 @@ export async function saveProbHubSource(
   expectedRevision: string,
 ): Promise<{ readonly document?: ProbHubSourceDocument; readonly error?: ProbHubSourceError }> {
   const params = new URLSearchParams({ sessionId: currentSession, problemId })
-  const response = await fetch(`/probhub/api/source?${params.toString()}`, {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ problemId, target, content, expectedRevision }),
-  }).catch(() => undefined)
-  if (response === undefined) return { error: { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' } }
-  let body: unknown
-  try { body = await response.json() } catch { return { error: { code: 'source_invalid_response', message: '源文件服务返回了无效响应' } } }
-  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
-    const value = body as Record<string, unknown> | null
-    return {
-      error: {
-        code: typeof value?.code === 'string' ? value.code : response.status === 409 ? 'source_conflict' : 'source_write_failed',
-        message: typeof value?.error === 'string' ? value.error : '保存源文件失败',
-        ...(typeof value?.expectedRevision === 'string' ? { expectedRevision: value.expectedRevision } : {}),
-        ...(typeof value?.currentRevision === 'string' ? { currentRevision: value.currentRevision } : {}),
-      },
-    }
-  }
-  const value = body as Record<string, unknown>
-  const source = value.source
-  if (source === null || typeof source !== 'object' || Array.isArray(source)) return { error: { code: 'source_invalid_response', message: '源文件服务缺少 source 响应' } }
-  const record = source as Record<string, unknown>
-  if (typeof record.target !== 'string' || typeof record.revision !== 'string' || typeof record.bytes !== 'number') {
+  const result = await fetchProbHubRecord(
+    `/probhub/api/source?${params.toString()}`,
+    {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ problemId, target, content, expectedRevision }),
+    },
+    { code: 'source_unavailable', message: '无法连接 ProbHub 源文件服务' },
+    { code: 'source_invalid_response', message: '源文件服务返回了无效响应' },
+    { code: 'source_write_failed', message: '保存源文件失败', conflictCode: 'source_conflict' },
+  )
+  if ('error' in result) return { error: result.error }
+  const value = result.value
+  const record = parseSourceRecord(value.source, false)
+  if (record === undefined) {
     return { error: { code: 'source_invalid_response', message: '源文件服务返回了不完整保存结果' } }
   }
   const impact = parseSourceImpact(value.impact)
@@ -475,19 +539,19 @@ export async function startProbHubDeliveryJob(
 ): Promise<{ readonly job?: ProbHubDeliveryJob; readonly error?: ProbHubSourceError }> {
   const params = new URLSearchParams({ sessionId: currentSession })
   if (operation !== 'assemble' && problemId !== undefined) params.set('problemId', problemId)
-  const response = await fetch(`/probhub/api/jobs?${params.toString()}`, {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ operation, noCache, ...(rounds === undefined ? {} : { rounds }), ...(seed === undefined ? {} : { seed }) }),
-  }).catch(() => undefined)
-  if (response === undefined) return { error: { code: 'job_unavailable', message: '无法连接 ProbHub 任务服务' } }
-  let body: unknown
-  try { body = await response.json() } catch { return { error: { code: 'job_invalid_response', message: '任务服务返回了无效响应' } } }
-  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
-    const value = body as Record<string, unknown> | null
-    return { error: { code: typeof value?.code === 'string' ? value.code : 'job_start_failed', message: typeof value?.error === 'string' ? value.error : '无法启动 ProbHub 任务' } }
-  }
-  const value = body as Record<string, unknown>
+  const result = await fetchProbHubRecord(
+    `/probhub/api/jobs?${params.toString()}`,
+    {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ operation, noCache, ...(rounds === undefined ? {} : { rounds }), ...(seed === undefined ? {} : { seed }) }),
+    },
+    { code: 'job_unavailable', message: '无法连接 ProbHub 任务服务' },
+    { code: 'job_invalid_response', message: '任务服务返回了无效响应' },
+    { code: 'job_start_failed', message: '无法启动 ProbHub 任务' },
+  )
+  if ('error' in result) return { error: result.error }
+  const value = result.value
   const job = value.job
   if (job === null || typeof job !== 'object' || Array.isArray(job)) return { error: { code: 'job_invalid_response', message: '任务服务缺少 job 响应' } }
   const record = job as Record<string, unknown>
@@ -568,18 +632,18 @@ export async function cancelProbHubJob(
   jobId: string,
 ): Promise<{ readonly cancelled?: boolean; readonly error?: ProbHubSourceError }> {
   const params = new URLSearchParams({ sessionId: currentSession, jobId })
-  const response = await fetch(`/probhub/api/jobs/cancel?${params.toString()}`, {
-    method: 'POST',
-    headers: { accept: 'application/json' },
-  }).catch(() => undefined)
-  if (response === undefined) return { error: { code: 'job_unavailable', message: '无法连接 ProbHub 任务服务' } }
-  let body: unknown
-  try { body = await response.json() } catch { return { error: { code: 'job_invalid_response', message: '任务服务返回了无效响应' } } }
-  if (!response.ok || body === null || typeof body !== 'object' || Array.isArray(body)) {
-    const value = body as Record<string, unknown> | null
-    return { error: { code: typeof value?.code === 'string' ? value.code : 'job_cancel_failed', message: typeof value?.error === 'string' ? value.error : '无法取消 ProbHub 任务' } }
-  }
-  const value = body as Record<string, unknown>
+  const result = await fetchProbHubRecord(
+    `/probhub/api/jobs/cancel?${params.toString()}`,
+    {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+    },
+    { code: 'job_unavailable', message: '无法连接 ProbHub 任务服务' },
+    { code: 'job_invalid_response', message: '任务服务返回了无效响应' },
+    { code: 'job_cancel_failed', message: '无法取消 ProbHub 任务' },
+  )
+  if ('error' in result) return { error: result.error }
+  const value = result.value
   if (typeof value.cancelled !== 'boolean') return { error: { code: 'job_invalid_response', message: '任务服务返回了不完整取消结果' } }
   return { cancelled: value.cancelled }
 }
