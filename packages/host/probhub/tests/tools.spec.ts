@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
@@ -226,9 +226,10 @@ describe('ProbHub background tools', () => {
       agent,
     })
     expect(verify.isError).toBe(false)
-    expect(spawned[1]?.argv).toEqual(expect.arrayContaining([
-      '--json', 'verify-package', join(workspace, 'A01.zip'), '--require-pdf', '--problem', 'A01',
-    ]))
+    expect(spawned[1]?.argv).toEqual(expect.arrayContaining(['--json', 'verify-package', '--require-pdf', '--problem', 'A01']))
+    const packagePath = spawned[1]?.argv.find(value => /[\\/]A01\.zip$/.test(value))
+    expect(packagePath).toBeDefined()
+    expect(realpathSync(packagePath!)).toBe(realpathSync(join(workspace, 'A01.zip')))
     expect(ctx.tools.get('probhub_build')?.isConcurrencySafe?.({ problem_ids: ['A01'], confirm: true })).toBe(false)
     expect(ctx.tools.get('probhub_generation_status')?.isConcurrencySafe?.({})).toBe(true)
   })

@@ -3,7 +3,7 @@
 import { lstat, readFile, realpath, stat } from 'node:fs/promises'
 import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative as relativePath } from 'node:path'
+import { dirname, isAbsolute, join, normalize, relative as relativePath } from 'node:path'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -903,7 +903,7 @@ export async function resolvePackagePath(workspace: string, problemId: string): 
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`generated package is not a regular file for ${problemId}`)
   try {
     const [canonicalWorkspace, canonicalPath] = await Promise.all([realpath(workspace), realpath(path)])
-    if (dirname(canonicalPath) !== canonicalWorkspace) throw new Error('package path escapes the canonical workspace')
+    if (!sameFilesystemEntry(dirname(canonicalPath), canonicalWorkspace)) throw new Error('package path escapes the canonical workspace')
     if (!(await stat(canonicalPath)).isFile()) throw new Error(`generated package is not a regular file for ${problemId}`)
     return canonicalPath
   } catch (error) {
@@ -1776,6 +1776,25 @@ function projectProblemMap(value: unknown, includeVerification: boolean): Record
 const PROBLEM_ID_MARKER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
 /**
+ * Compare paths by filesystem identity before falling back to a normalized
+ * spelling. Windows can expose one directory through both an 8.3 short name
+ * and its long name; strict string comparison would reject that valid alias.
+ */
+function sameFilesystemEntry(left: string, right: string): boolean {
+  try {
+    const leftInfo = statSync(left)
+    const rightInfo = statSync(right)
+    if (
+      leftInfo.dev !== 0 && rightInfo.dev !== 0 && leftInfo.ino !== 0
+      && leftInfo.dev === rightInfo.dev && leftInfo.ino === rightInfo.ino
+    ) return true
+  } catch {
+    // Fall through to normalized spelling when filesystem metadata is absent.
+  }
+  return normalize(left).toLowerCase() === normalize(right).toLowerCase()
+}
+
+/**
  * Start one detached, workspace-write Core operation as a generic job producer.
  * The producer owns only the child process and its cancellation marker; Core
  * remains responsible for locks, snapshots, evidence and transactional writes.
@@ -1800,13 +1819,16 @@ export function createCoreJobHooks(
   const sessionCwd = request.session.header.cwd
   if (sessionCwd === undefined) throw new Error('session has no canonical cwd')
   let canonicalSession: string
+  let canonicalWorkspace: string
   try {
     canonicalSession = realpathSync(sessionCwd)
     if (!statSync(join(canonicalSession, '.probhub', 'workspace.yaml')).isFile()) throw new Error('workspace schema missing')
+    canonicalWorkspace = realpathSync(workspace)
+    if (!statSync(join(canonicalWorkspace, '.probhub', 'workspace.yaml')).isFile()) throw new Error('workspace schema missing')
   } catch {
     throw new Error('Workspace Schema v1 is required; migrate this old workspace first')
   }
-  if (canonicalSession !== workspace) throw new Error('workspace identity changed; retry the validation job')
+  if (!sameFilesystemEntry(canonicalSession, canonicalWorkspace)) throw new Error('workspace identity changed; retry the validation job')
   const temp = mkdtempSync(join(tmpdir(), 'dsh-probhub-job-'))
   const cancelFile = join(temp, 'cancel')
   const controller = new AbortController()
