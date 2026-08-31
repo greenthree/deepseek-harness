@@ -28,7 +28,9 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/*.js",
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/tools.js",
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
