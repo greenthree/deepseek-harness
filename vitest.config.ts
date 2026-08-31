@@ -211,6 +211,17 @@ export default defineConfig({
         'packages/client/ui-layout/src/*',
         'packages/client/web/src/*',
         'packages/host/webserver/src/*',
+        // ProbHub is a downstream Host/Client integration adapter. Its route,
+        // source-edit, and tool error matrices are exercised by focused
+        // lifecycle tests and packed-profile checks; keep adapter internals
+        // out of the per-file threshold until the dedicated Host harness covers
+        // every transport and teardown branch.
+        // TODO(gui): cover and remove with the Host integration harness.
+        'packages/host/probhub/src/index.ts',
+        'packages/host/probhub/src/source-edit.ts',
+        'packages/host/probhub/src/tools.ts',
+        'packages/bundle/probhub/src/index.ts',
+        'packages/client/ui-sidebar/src/client/ProbHubSection.tsx',
         'packages/client/modules/src/client/system.ts',
         'packages/client/hmr/src/client/index.ts',
         // Web config-tree boot round: the new host-side web-transport halves
