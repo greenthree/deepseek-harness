@@ -33,7 +33,7 @@ patch 层向 profile 增加 ProbHub Host 行和 `@deepseek-ai/dsh-host-probhub/t
 
 #### 模型看到的内容
 
-Bundle 挂载后，模型可以启动验证任务（`probhub_judge`、`probhub_stress`、`probhub_judge_qa`、`probhub_mutation`）、交付任务（`probhub_checkpoint`、`probhub_seal`、`probhub_assemble`、`probhub_build`）和只读查询（`probhub_generation_status`、`probhub_report`、`probhub_verify_package`）。每个后台任务返回通用 job id；使用 `job_output` 获取有界结果，使用 `job_kill` 请求取消。只有 `probhub_build` 会发布正式 PDF/ZIP/metadata/Manifest，并且需要显式确认和 approval。`probhub_verify_package` 根据 `problem_id` 从规范工作区派生 ZIP，不接受任意路径。
+Bundle 挂载后，模型可以启动验证任务（`probhub_judge`、`probhub_stress`、`probhub_judge_qa`、`probhub_mutation`）、交付任务（`probhub_checkpoint`、`probhub_seal`、`probhub_assemble`、`probhub_build`）和只读查询（`probhub_delivery_check`、`probhub_generation_status`、`probhub_report`、`probhub_verify_package`）。每个后台任务返回通用 job id；使用 `job_output` 获取有界结果，使用 `job_kill` 请求取消。`probhub_delivery_check` 会在发布前组合当前 sealed revision、预览 generation、report 和规范包检查。只有 `probhub_build` 会发布正式 PDF/ZIP/metadata/Manifest，并且需要显式确认和 approval。`probhub_verify_package` 根据 `problem_id` 从规范工作区派生 ZIP，不接受任意路径。
 
 #### Token 影响
 

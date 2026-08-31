@@ -8,7 +8,7 @@ Host bridge for a ProbHub Workspace Schema v1 project. The plugin registers `/pr
 
 Core execution uses the shared `SubprocessRuntime`, the caller's already-authorized `workspace-write` `sandboxPolicy`/`sandbox` confinement, bounded collected output, process-tree termination, and the configured executable. Deployments that omit either sandbox service fail closed with `sandbox_unavailable`. The bridge owns route lifetime through a Cordis effect; unloading the plugin removes every route.
 
-The read-only `GET /probhub/api/delivery-check?sessionId=...&problemId=...` projection combines status, report, preview-generation completeness, sealed-revision matching, and canonical package verification. It returns bounded blocker codes for the formal publication checklist and never publishes files; the model-facing `probhub_build` tool remains the only publication path.
+The read-only `GET /probhub/api/delivery-check?sessionId=...&problemId=...` projection combines status, report, preview-generation completeness, sealed-revision matching, calibration state, and canonical package verification. It returns bounded blocker codes and selected-problem details for the formal publication checklist and never publishes files. A missing ZIP is shown as `missing` but remains a first-build condition because Core creates and verifies it transactionally; stale status, invalid generation, missing calibration, failed QA, and invalid existing ZIPs block publication. The model-facing `probhub_build` tool remains the only publication path.
 
 ## Model Experience
 

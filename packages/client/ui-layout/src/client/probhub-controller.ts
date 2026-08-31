@@ -60,18 +60,249 @@ export interface ProbHubDeliveryJob {
   readonly problemId?: string
 }
 
+/** Bounded generation state used by the formal publication summary. */
+export interface ProbHubDeliveryGeneration {
+  readonly generationId?: string
+  readonly state?: string
+  readonly complete?: boolean
+  readonly allSealed?: boolean
+  readonly missing: readonly string[]
+  readonly staleFields: readonly string[]
+  readonly problems: readonly {
+    readonly problemId: string
+    readonly state?: string
+    readonly revisionId?: string
+    readonly sourceHash?: string
+    readonly dataHash?: string
+  }[]
+}
+
+/** One source/sealed revision comparison from the formal publication gate. */
+export interface ProbHubDeliveryRevision {
+  readonly status?: string
+  readonly sealed: boolean
+  readonly consistent: boolean
+  readonly sourceHash?: string
+  readonly dataHash?: string
+  readonly sealedRevision?: string
+}
+
+/** Bounded package verification counts returned by the formal gate. */
+export interface ProbHubDeliveryVerification {
+  readonly ok: boolean
+  readonly state?: string
+  readonly code?: string
+  readonly verificationScope?: string
+  readonly errorCount?: number
+  readonly warningCount?: number
+  readonly fileCount?: number
+  readonly sampleCount?: number
+  readonly secretCount?: number
+}
+
+/** One canonical package check from the formal publication gate. */
+export interface ProbHubDeliveryPackage extends ProbHubDeliveryVerification {
+  readonly verification?: ProbHubDeliveryVerification
+}
+
+/** Minimal bounded report projection retained by the delivery summary. */
+export interface ProbHubDeliveryReport {
+  readonly ok: boolean
+  readonly summary?: Record<string, number>
+}
+
 /** Read-only formal delivery gate projection returned by the Host. */
 export interface ProbHubDeliveryGate {
   readonly ok: boolean
   readonly state: 'ready' | 'blocked' | 'error'
   readonly problemIds: readonly string[]
   readonly checks: {
-    readonly revision: Record<string, unknown>
-    readonly generation: Record<string, unknown>
-    readonly packages: Record<string, Record<string, unknown>>
+    readonly revision: Record<string, ProbHubDeliveryRevision>
+    readonly generation: ProbHubDeliveryGeneration
+    readonly packages: Record<string, ProbHubDeliveryPackage>
   }
   readonly blockers: readonly { readonly code: string; readonly problemId?: string; readonly detail?: string }[]
-  readonly report?: Record<string, unknown>
+  readonly report?: ProbHubDeliveryReport
+}
+
+const DELIVERY_MARKER = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u
+
+function deliveryMarker(value: unknown): string | undefined {
+  return typeof value === 'string' && DELIVERY_MARKER.test(value) ? value : undefined
+}
+
+function deliveryCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : undefined
+}
+
+function parseDeliveryGeneration(value: unknown): ProbHubDeliveryGeneration | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const generationId = deliveryMarker(record.generationId ?? record.generation_id)
+  const state = deliveryMarker(record.state)
+  const complete = record.complete
+  const allSealed = record.allSealed ?? record.all_sealed
+  if (complete !== undefined && typeof complete !== 'boolean') return undefined
+  if (allSealed !== undefined && typeof allSealed !== 'boolean') return undefined
+  const rawMissing = record.missing
+  if (rawMissing !== undefined && (!Array.isArray(rawMissing) || rawMissing.length > 256)) return undefined
+  const missing = (rawMissing ?? []).flatMap((item: unknown) => {
+    const id = typeof item === 'string'
+      ? deliveryMarker(item)
+      : item !== null && typeof item === 'object' && !Array.isArray(item)
+        ? deliveryMarker((item as Record<string, unknown>).problemId ?? (item as Record<string, unknown>).problem_id)
+        : undefined
+    return id === undefined ? [] : [id]
+  })
+  if (missing.length !== (rawMissing?.length ?? 0)) return undefined
+  const rawStaleFields = record.staleFields ?? record.stale_fields
+  if (rawStaleFields !== undefined && (!Array.isArray(rawStaleFields) || rawStaleFields.length > 64)) return undefined
+  const staleFields = (rawStaleFields ?? []).flatMap((item: unknown) => {
+    const marker = deliveryMarker(item)
+    return marker === undefined ? [] : [marker]
+  })
+  if (staleFields.length !== (rawStaleFields?.length ?? 0)) return undefined
+  const rawProblems = record.problems
+  if (rawProblems !== undefined && (!Array.isArray(rawProblems) || rawProblems.length > 256)) return undefined
+  const problems = (rawProblems ?? []).flatMap((item: unknown) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return []
+    const problem = item as Record<string, unknown>
+    const problemId = deliveryMarker(problem.problemId ?? problem.problem_id)
+    if (problemId === undefined) return []
+    const parseMarker = (value: unknown): string | undefined => value === undefined ? undefined : deliveryMarker(value)
+    const state = parseMarker(problem.state)
+    const revisionId = parseMarker(problem.revisionId ?? problem.revision_id)
+    const sourceHash = parseMarker(problem.sourceHash ?? problem.source_hash)
+    const dataHash = parseMarker(problem.dataHash ?? problem.data_hash)
+    if ((problem.state !== undefined && state === undefined)
+      || (problem.revisionId !== undefined && revisionId === undefined)
+      || (problem.revision_id !== undefined && revisionId === undefined)
+      || (problem.sourceHash !== undefined && sourceHash === undefined)
+      || (problem.source_hash !== undefined && sourceHash === undefined)
+      || (problem.dataHash !== undefined && dataHash === undefined)
+      || (problem.data_hash !== undefined && dataHash === undefined)) return []
+    return [{
+      problemId,
+      ...(state === undefined ? {} : { state }),
+      ...(revisionId === undefined ? {} : { revisionId }),
+      ...(sourceHash === undefined ? {} : { sourceHash }),
+      ...(dataHash === undefined ? {} : { dataHash }),
+    }]
+  })
+  if (problems.length !== (rawProblems?.length ?? 0)) return undefined
+  return {
+    ...(generationId === undefined ? {} : { generationId }),
+    ...(state === undefined ? {} : { state }),
+    ...(complete === undefined ? {} : { complete }),
+    ...(allSealed === undefined ? {} : { allSealed }),
+    missing,
+    staleFields,
+    problems,
+  }
+}
+
+function parseDeliveryRevision(value: unknown): ProbHubDeliveryRevision | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.sealed !== 'boolean' || typeof record.consistent !== 'boolean') return undefined
+  const status = record.status === undefined ? undefined : deliveryMarker(record.status)
+  if (record.status !== undefined && status === undefined) return undefined
+  const sourceHash = record.sourceHash === undefined ? undefined : deliveryMarker(record.sourceHash)
+  const dataHash = record.dataHash === undefined ? undefined : deliveryMarker(record.dataHash)
+  const sealedRevision = record.sealedRevision === undefined ? undefined : deliveryMarker(record.sealedRevision)
+  if ((record.sourceHash !== undefined && sourceHash === undefined)
+    || (record.dataHash !== undefined && dataHash === undefined)
+    || (record.sealedRevision !== undefined && sealedRevision === undefined)) return undefined
+  return {
+    ...(status === undefined ? {} : { status }),
+    sealed: record.sealed,
+    consistent: record.consistent,
+    ...(sourceHash === undefined ? {} : { sourceHash }),
+    ...(dataHash === undefined ? {} : { dataHash }),
+    ...(sealedRevision === undefined ? {} : { sealedRevision }),
+  }
+}
+
+function parseDeliveryVerification(value: unknown): ProbHubDeliveryVerification | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.ok !== 'boolean') return undefined
+  const state = record.state === undefined ? undefined : deliveryMarker(record.state)
+  const code = record.code === undefined ? undefined : deliveryMarker(record.code)
+  const verificationScope = record.verification_scope === undefined ? undefined : deliveryMarker(record.verification_scope)
+  if ((record.state !== undefined && state === undefined)
+    || (record.code !== undefined && code === undefined)
+    || (record.verification_scope !== undefined && verificationScope === undefined)) return undefined
+  const result: ProbHubDeliveryVerification = {
+    ok: record.ok,
+    ...(state === undefined ? {} : { state }),
+    ...(code === undefined ? {} : { code }),
+    ...(verificationScope === undefined ? {} : { verificationScope }),
+  }
+  for (const [input, output] of [
+    ['errorCount', 'errorCount'],
+    ['warningCount', 'warningCount'],
+    ['fileCount', 'fileCount'],
+    ['sampleCount', 'sampleCount'],
+    ['secretCount', 'secretCount'],
+  ] as const) {
+    if (record[input] !== undefined) {
+      const count = deliveryCount(record[input])
+      if (count === undefined) return undefined
+      Object.assign(result, { [output]: count })
+    }
+  }
+  return result
+}
+
+function parseDeliveryChecks(value: unknown): ProbHubDeliveryGate['checks'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const checks = value as Record<string, unknown>
+  const generation = parseDeliveryGeneration(checks.generation)
+  if (generation === undefined) return undefined
+  const revisionRaw = checks.revision
+  const packageRaw = checks.packages
+  if (revisionRaw === null || typeof revisionRaw !== 'object' || Array.isArray(revisionRaw) || packageRaw === null || typeof packageRaw !== 'object' || Array.isArray(packageRaw)) return undefined
+  const revision: Record<string, ProbHubDeliveryRevision> = {}
+  for (const [id, raw] of Object.entries(revisionRaw).slice(0, 256)) {
+    if (!DELIVERY_MARKER.test(id)) return undefined
+    const parsed = parseDeliveryRevision(raw)
+    if (parsed === undefined) return undefined
+    revision[id] = parsed
+  }
+  if (Object.keys(revisionRaw).length > 256) return undefined
+  const packages: Record<string, ProbHubDeliveryPackage> = {}
+  for (const [id, raw] of Object.entries(packageRaw).slice(0, 256)) {
+    if (!DELIVERY_MARKER.test(id) || raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+    const record = raw as Record<string, unknown>
+    const base = parseDeliveryVerification(record)
+    if (base === undefined) return undefined
+    const verification = record.verification === undefined ? undefined : parseDeliveryVerification(record.verification)
+    if (record.verification !== undefined && verification === undefined) return undefined
+    packages[id] = { ...base, ...(verification === undefined ? {} : { verification }) }
+  }
+  if (Object.keys(packageRaw).length > 256) return undefined
+  return { revision, generation, packages }
+}
+
+function parseDeliveryReport(value: unknown): ProbHubDeliveryReport | undefined {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.ok !== 'boolean') return undefined
+  const rawSummary = record.summary
+  if (rawSummary === undefined) return { ok: record.ok }
+  if (rawSummary === null || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return undefined
+  const entries = Object.entries(rawSummary)
+  if (entries.length > 64) return undefined
+  const summary: Record<string, number> = {}
+  for (const [key, raw] of entries) {
+    if (!DELIVERY_MARKER.test(key)) return undefined
+    const count = deliveryCount(raw)
+    if (count === undefined) return undefined
+    summary[key] = count
+  }
+  return { ok: record.ok, summary }
 }
 
 function parseSourceImpact(value: unknown): ProbHubSourceDocument['impact'] | undefined {
@@ -97,7 +328,11 @@ function parseSourceTarget(value: unknown): ProbHubSourceTarget | undefined {
   return { target: record.target, kind, name, bytes: record.bytes }
 }
 
-/** List the Host-approved source files for one problem. */
+/** List the Host-approved source files for one problem.
+ * @param currentSession - Current Harness Session id.
+ * @param problemId - Schema v1 problem id.
+ * @returns Allowlisted source targets or a bounded error.
+ */
 export async function listProbHubSourceTargets(
   currentSession: string,
   problemId: string,
@@ -121,7 +356,12 @@ export async function listProbHubSourceTargets(
   return { targets }
 }
 
-/** Read one allowlisted source target through the same-origin Host bridge. */
+/** Read one allowlisted source target through the same-origin Host bridge.
+ * @param currentSession - Current Harness Session id.
+ * @param problemId - Schema v1 problem id.
+ * @param target - Allowlisted source target, defaulting to the statement.
+ * @returns The source document or a bounded error.
+ */
 export async function readProbHubSource(
   currentSession: string,
   problemId: string,
@@ -161,7 +401,14 @@ export async function readProbHubSource(
   }
 }
 
-/** Save one allowlisted source target using an exact Core source revision. */
+/** Save one allowlisted source target using an exact Core source revision.
+ * @param currentSession - Current Harness Session id.
+ * @param problemId - Schema v1 problem id.
+ * @param target - Allowlisted source target.
+ * @param content - UTF-8 source content to save.
+ * @param expectedRevision - Revision read before editing.
+ * @returns The saved source document or a conflict/error.
+ */
 export async function saveProbHubSource(
   currentSession: string,
   problemId: string,
@@ -209,7 +456,15 @@ export async function saveProbHubSource(
   }
 }
 
-/** Start one non-publishing delivery job through the current Host Session. */
+/** Start one non-publishing delivery job through the current Host Session.
+ * @param currentSession - Current Harness Session id.
+ * @param operation - Allowlisted Core operation.
+ * @param problemId - Problem id for a problem-scoped operation.
+ * @param noCache - Whether Core should bypass its caches.
+ * @param rounds - Optional bounded stress round count.
+ * @param seed - Optional deterministic stress seed.
+ * @returns The accepted Job identity or a bounded error.
+ */
 export async function startProbHubDeliveryJob(
   currentSession: string,
   operation: ProbHubDeliveryOperation,
@@ -242,7 +497,11 @@ export async function startProbHubDeliveryJob(
   return { job: { id: record.id, operation, ...(record.problemId === undefined ? {} : { problemId: record.problemId }) } }
 }
 
-/** Read the formal publication prerequisites for one or more current problems. */
+/** Read the formal publication prerequisites for one or more current problems.
+ * @param currentSession - Current Harness Session id.
+ * @param problemIds - Distinct problem ids to check.
+ * @returns The bounded delivery gate or a response error.
+ */
 export async function checkProbHubDelivery(
   currentSession: string,
   problemIds: readonly string[],
@@ -281,21 +540,29 @@ export async function checkProbHubDelivery(
   const checks = gate.checks
   if (checks === null || typeof checks !== 'object' || Array.isArray(checks)) return { error: { code: 'delivery_invalid_response', message: '交付门禁缺少检查结果' } }
   const rawIds = gate.problemIds
-  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 256 || rawIds.some(id => typeof id !== 'string' || id.length === 0)) {
+  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 256 || rawIds.some(id => typeof id !== 'string' || !DELIVERY_MARKER.test(id)) || new Set(rawIds).size !== rawIds.length) {
     return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了无效题目列表' } }
   }
+  const parsedChecks = parseDeliveryChecks(checks)
+  if (parsedChecks === undefined) return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了无效检查详情' } }
+  const report = parseDeliveryReport(gate.report)
+  if (report === undefined && gate.report !== undefined) return { error: { code: 'delivery_invalid_response', message: '交付门禁返回了无效 report' } }
   const parsed: ProbHubDeliveryGate = {
     ok: gate.ok,
     state: gate.state,
     problemIds: rawIds,
-    checks: checks as ProbHubDeliveryGate['checks'],
+    checks: parsedChecks,
     blockers: parsedBlockers,
-    ...(value.delivery && typeof value.delivery === 'object' && 'report' in value.delivery ? { report: (value.delivery as Record<string, unknown>).report as Record<string, unknown> } : {}),
+    ...(report === undefined ? {} : { report }),
   }
   return { delivery: parsed }
 }
 
-/** Cancel one current-Session ProbHub Job through the Host bridge. */
+/** Cancel one current-Session ProbHub Job through the Host bridge.
+ * @param currentSession - Current Harness Session id.
+ * @param jobId - Job id returned by the Host.
+ * @returns Whether cancellation was requested or a bounded error.
+ */
 export async function cancelProbHubJob(
   currentSession: string,
   jobId: string,
@@ -317,7 +584,11 @@ export async function cancelProbHubJob(
   return { cancelled: value.cancelled }
 }
 
-/** Check whether the current Session has a valid isolated preview PDF. */
+/** Check whether the current Session has a valid isolated preview PDF.
+ * @param currentSession - Current Harness Session id.
+ * @param problemId - Schema v1 problem id.
+ * @returns Whether the isolated preview route is currently available.
+ */
 export async function checkProbHubPreview(currentSession: string, problemId: string): Promise<boolean> {
   const params = new URLSearchParams({ sessionId: currentSession })
   const response = await fetch(`/probhub/api/problems/${encodeURIComponent(problemId)}/preview?${params.toString()}`, {

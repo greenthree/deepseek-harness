@@ -23,6 +23,8 @@ interface Spawned {
   finish?: (value: { exitCode: number | null; signal: NodeJS.Signals | null }) => void
 }
 
+type TestCoreOutput = string | ((argv: readonly string[]) => string)
+
 // Compile-time contract: event arguments stay branded/stable at the Host
 // emission seam instead of degrading to an anonymous `unknown[]` tuple.
 function probHubNavigationEventTypes(ctx: Context): void {
@@ -49,7 +51,7 @@ afterEach(async () => {
 })
 
 async function setup(
-  output = JSON.stringify({ ok: true, code: 'all_expectations_met' }),
+  output: TestCoreOutput = JSON.stringify({ ok: true, code: 'all_expectations_met' }),
   mode: 'workspace-write' | 'read-only' = 'workspace-write',
   finishOnSpawn = false,
   waitForExitReject = false,
@@ -88,7 +90,10 @@ async function setup(
           if (waitForExitReject) throw new Error('tree probe failed')
           return true
         },
-        collected: { stdout: { readFrom: () => ({ text: output, nextOffset: Buffer.byteLength(output), lossy: false }) } },
+        collected: { stdout: { readFrom: () => {
+          const text = typeof output === 'function' ? output(spec.argv) : output
+          return { text, nextOffset: Buffer.byteLength(text), lossy: false }
+        } } },
         finish,
       } as unknown as Spawned
       spawned.push(handle)
@@ -253,25 +258,34 @@ describe('ProbHub background tools', () => {
   })
 
   it('starts a confirmed build only after the normal approval seam allows it', async () => {
-    const gateOutput = JSON.stringify({
-      ok: true,
-      problems: {
-        A01: { state: 'stale', source_hash: 'source-a', data_hash: 'data-a' },
-        B02: { state: 'stale', source_hash: 'source-b', data_hash: 'data-b' },
-      },
-      generation_id: 'gen-1',
-      state: 'sealed-preview',
-      manifest: {
-        complete: true,
-        all_sealed: true,
-        missing: [],
-        problems: [
-          { problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' },
-          { problem_id: 'B02', state: 'sealed', revision_id: 'sealed-b', source_hash: 'source-b', data_hash: 'data-b' },
-        ],
-      },
-      verification: { ok: true },
-    })
+    const gateOutput: TestCoreOutput = (argv) => {
+      if (argv.includes('generation-status')) return JSON.stringify({
+        ok: true,
+        generation_id: 'gen-1',
+        state: 'sealed-preview',
+        manifest: {
+          complete: true,
+          all_sealed: true,
+          missing: [],
+          problems: [
+            { problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' },
+            { problem_id: 'B02', state: 'sealed', revision_id: 'sealed-b', source_hash: 'source-b', data_hash: 'data-b' },
+          ],
+        },
+      })
+      if (argv.includes('status')) return JSON.stringify({
+        ok: true,
+        problems: {
+          A01: { state: 'current', source_hash: 'source-a', data_hash: 'data-a' },
+          B02: { state: 'current', source_hash: 'source-b', data_hash: 'data-b' },
+        },
+      })
+      if (argv.includes('report')) return JSON.stringify({
+        ok: true,
+        problems: [{ id: 'A01', calibration: { state: 'current' } }, { id: 'B02', calibration: { state: 'current' } }],
+      })
+      return JSON.stringify({ ok: true, verification: { ok: true } })
+    }
     const { ctx, agent, spawned } = await setup(gateOutput, 'workspace-write', true)
     ctx.provide('approval', { request: async () => 'allowed-once' } as never)
     const result = await ctx.tools.execute({
@@ -341,18 +355,22 @@ describe('ProbHub background tools', () => {
   })
 
   it('exposes the formal delivery gate as a bounded read-only tool', async () => {
-    const output = JSON.stringify({
-      ok: true,
-      problems: { A01: { state: 'stale', source_hash: 'source-a', data_hash: 'data-a' } },
-      generation_id: 'gen-1',
-      state: 'sealed-preview',
-      manifest: {
-        complete: true,
-        all_sealed: true,
-        missing: [],
-        problems: [{ problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' }],
-      },
-    })
+    const output: TestCoreOutput = (argv) => {
+      if (argv.includes('generation-status')) return JSON.stringify({
+        ok: true,
+        generation_id: 'gen-1',
+        state: 'sealed-preview',
+        manifest: {
+          complete: true,
+          all_sealed: true,
+          missing: [],
+          problems: [{ problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' }],
+        },
+      })
+      if (argv.includes('status')) return JSON.stringify({ ok: true, problems: { A01: { state: 'current', source_hash: 'source-a', data_hash: 'data-a' } } })
+      if (argv.includes('report')) return JSON.stringify({ ok: true, problems: [{ id: 'A01', calibration: { state: 'current' } }] })
+      return JSON.stringify({ ok: true, verification: { ok: true } })
+    }
     const { ctx, agent } = await setup(output, 'workspace-write', true)
     const result = await ctx.tools.execute({
       signal: new AbortController().signal,
@@ -364,6 +382,38 @@ describe('ProbHub background tools', () => {
     expect(result.isError).toBe(false)
     expect(result.value).toMatchObject({ ok: true, state: 'ready', problemIds: ['A01'] })
     expect(JSON.stringify(result.value)).not.toContain('C:/')
+  })
+
+  it('blocks a package whose nested verification result is false', async () => {
+    const output: TestCoreOutput = (argv) => {
+      if (argv.includes('generation-status')) return JSON.stringify({
+        ok: true,
+        generation_id: 'gen-1',
+        state: 'sealed-preview',
+        manifest: {
+          complete: true,
+          all_sealed: true,
+          missing: [],
+          problems: [{ problem_id: 'A01', state: 'sealed', revision_id: 'sealed-a', source_hash: 'source-a', data_hash: 'data-a' }],
+        },
+      })
+      if (argv.includes('status')) return JSON.stringify({ ok: true, problems: { A01: { state: 'current', source_hash: 'source-a', data_hash: 'data-a' } } })
+      if (argv.includes('report')) return JSON.stringify({ ok: true, problems: [{ id: 'A01', calibration: { state: 'current' } }] })
+      return JSON.stringify({ ok: true, verification: { ok: false, code: 'zip_invalid' } })
+    }
+    const { ctx, agent, spawned, workspace } = await setup(output, 'workspace-write', true)
+    ctx.provide('approval', { request: async () => 'allowed-once' } as never)
+    writeFileSync(join(workspace, 'A01.zip'), 'invalid')
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('nested-verification-failed'),
+      name: 'probhub_build',
+      arguments: { problem_ids: ['A01'], confirm: true },
+      agent,
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.type === 'text' ? result.content[0].text : '').toContain('package_verify_failed')
+    expect(spawned).toHaveLength(4)
   })
 
   it('rejects a missing generated package before starting Core', async () => {

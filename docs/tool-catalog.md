@@ -37,7 +37,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`, `list_agents`, `send_message` | `ctx.tools`, `ctx.subagents`, `ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`, `tool/result`, `child session events through ctx.subagents` | - | The globally named control tools over continuable background subagents: provider-bound `tool-subagent` instances register distinct delegation tools, while this package registers `send_message` and `interrupt_agent` once, plus `list_agents` from its separately loaded `/list-agents` plugin (whose catalog rows use the sessionProjections and live Agent registries). |
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`, `ctx.systemPrompt`, `a live continuable in-process child Agent` | `tool/call`, `tool/result`, `a user-role message in the direct parent session` | - | Registered per continuable in-process child rather than globally, so this schema is visible only inside such a child and survives its global `toolFilter`. The same contribution installs the child-scoped `tool:report` prompt section, which this catalog does not render. The parent-facing `send_message` tool is installed independently. |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`, `job_list`, `job_output` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt` | `tool/call`, `tool/result`, `user/message via agent.inject() for background completion notices` | - | The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`. |
-| `@deepseek-ai/dsh-host-probhub/tools` | `probhub_assemble`, `probhub_build`, `probhub_checkpoint`, `probhub_generation_status`, `probhub_judge`, `probhub_judge_qa`, `probhub_mutation`, `probhub_report`, `probhub_seal`, `probhub_stress`, `probhub_verify_package` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt`, `ProbHub Core subprocess/sandbox services at execution time` | `tool/call`, `ctx.jobs background record`, `ProbHub Core caches/evidence/checkpoints/generations/formal artifacts at execution time`, `tool/result` | - | Optional host subpath consumer for Schema v1 ProbHub validation and delivery. Background writers (probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation, probhub_checkpoint, probhub_seal, probhub_assemble, and probhub_build) derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids; probhub_assemble may create a draft checkpoint when one is missing; probhub_build additionally requires confirm: true and the normal approval seam because it publishes formal PDF, ZIP, metadata, and Manifest artifacts. Read-only probhub_generation_status, probhub_report, and probhub_verify_package return bounded projections; verify-package derives and validates the canonical workspace ZIP and accepts no arbitrary path. Collect or stop background jobs with the job tools; arbitrary paths, --against, and --fixate are not accepted. |
+| `@deepseek-ai/dsh-host-probhub/tools` | `probhub_assemble`, `probhub_build`, `probhub_checkpoint`, `probhub_delivery_check`, `probhub_generation_status`, `probhub_judge`, `probhub_judge_qa`, `probhub_mutation`, `probhub_report`, `probhub_seal`, `probhub_stress`, `probhub_verify_package` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt`, `ProbHub Core subprocess/sandbox services at execution time` | `tool/call`, `ctx.jobs background record`, `ProbHub Core caches/evidence/checkpoints/generations/formal artifacts at execution time`, `tool/result` | - | Optional host subpath consumer for Schema v1 ProbHub validation and delivery. Background writers (probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation, probhub_checkpoint, probhub_seal, probhub_assemble, and probhub_build) derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids; probhub_assemble may create a draft checkpoint when one is missing; probhub_build additionally requires confirm: true and the normal approval seam because it publishes formal PDF, ZIP, metadata, and Manifest artifacts. Read-only probhub_generation_status, probhub_report, and probhub_verify_package return bounded projections; verify-package derives and validates the canonical workspace ZIP and accepts no arbitrary path. Collect or stop background jobs with the job tools; arbitrary paths, --against, and --fixate are not accepted. |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
@@ -1775,6 +1775,30 @@ Create a ProbHub draft checkpoint for one Schema v1 problem in the background. T
   },
   "required": [
     "problem_id"
+  ]
+}
+```
+
+Source: [`packages/host/probhub/src/tools.ts`](../packages/host/probhub/src/tools.ts)
+
+### `probhub_delivery_check`
+
+Check bounded formal-publication prerequisites for one or more Schema v1 problems. This is read-only and never publishes artifacts.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "problem_ids": {
+      "type": "array",
+      "description": "One to 256 distinct Schema v1 problem ids from the current workspace.",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "problem_ids"
   ]
 }
 ```

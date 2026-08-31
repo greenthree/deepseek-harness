@@ -8,7 +8,7 @@ ProbHub Workspace Schema v1 项目的 Host bridge。插件在现有 `webServer` 
 
 Core 执行使用共享 `SubprocessRuntime`、调用者已经获准的 `workspace-write` `sandboxPolicy`/`sandbox` 隔离、有界收集输出和进程树终止；缺少任一 sandbox 服务时以 `sandbox_unavailable` fail closed。插件卸载时通过 Cordis effect 移除所有路由。
 
-只读的 `GET /probhub/api/delivery-check?sessionId=...&problemId=...` 会组合 status、report、预览 generation 完整性、sealed revision 一致性和规范 ZIP 验证，返回正式交付清单的有界阻断码且不会发布文件；正式发布仍只能通过面向模型的 `probhub_build` 工具完成。
+只读的 `GET /probhub/api/delivery-check?sessionId=...&problemId=...` 会组合 status、report、预览 generation 完整性、sealed revision 一致性、校准状态和规范 ZIP 验证，返回正式交付清单的有界阻断码与当前题目详情且不会发布文件。缺少 ZIP 会显示为 `missing`，但首次构建仍可继续，因为 Core 会在事务中创建并验证它；过期 status、无效 generation、缺少校准、QA 失败和已有 ZIP 无效都会阻断发布。正式发布仍只能通过面向模型的 `probhub_build` 工具完成。
 
 ## Model Experience
 

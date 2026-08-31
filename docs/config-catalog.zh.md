@@ -872,10 +872,14 @@ export interface Config {
   maxOutputBytes?: number
   /** Maximum time spent waiting for a read-only Core operation. */
   timeoutMs?: number
+  /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
+  maxSourceBytes?: number
+  /** Maximum bytes returned by one isolated preview PDF response. */
+  maxPreviewBytes?: number
 }
 ```
 
-来源：[`packages/host/probhub/src/index.ts:28`](../packages/host/probhub/src/index.ts)
+来源：[`packages/host/probhub/src/index.ts:40`](../packages/host/probhub/src/index.ts)
 
 <a id="deepseek-aidsh-host-webserver"></a>
 

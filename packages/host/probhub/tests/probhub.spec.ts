@@ -141,7 +141,7 @@ describe('host ProbHub bridge', () => {
         spawn: (spec: { argv: readonly string[] }) => {
           const operation = spec.argv[spec.argv.indexOf('--json') + 1]
           const value = operation === 'status'
-            ? { ok: true, problems: { A01: { state: 'stale', source_hash: 'source-1', data_hash: 'data-1' } } }
+            ? { ok: true, problems: { A01: { state: 'current', source_hash: 'source-1', data_hash: 'data-1' } } }
             : operation === 'generation-status'
               ? {
                 ok: true,
@@ -154,7 +154,7 @@ describe('host ProbHub bridge', () => {
                   problems: [{ problem_id: 'A01', state: 'sealed', revision_id: 'sealed-1', source_hash: 'source-1', data_hash: 'data-1' }],
                 },
               }
-              : { ok: true, problems: [{ id: 'A01', name: 'Alpha' }] }
+              : { ok: true, problems: [{ id: 'A01', name: 'Alpha', calibration: { state: 'current' } }] }
           const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
           return {
             done: Promise.resolve({ exitCode: 0, signal: null }),
@@ -213,7 +213,7 @@ describe('host ProbHub bridge', () => {
                   problems: [{ problem_id: 'A01', state: 'draft', revision_id: 'rev-1', source_hash: 'other-source', data_hash: 'data-1' }],
                 },
               }
-              : { ok: true, problems: [{ id: 'A01' }] }
+              : { ok: true, problems: [] }
           const reader = { readFrom: () => ({ text: JSON.stringify(value), lossy: false }) }
           return {
             done: Promise.resolve({ exitCode: 0, signal: null }),
@@ -234,6 +234,8 @@ describe('host ProbHub bridge', () => {
         'generation_incomplete',
         'generation_not_sealed',
         'generation_missing',
+        'status_stale',
+        'report_problem_missing',
         'sealed_revision_invalid',
         'revision_mismatch',
       ]))

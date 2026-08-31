@@ -8,7 +8,7 @@ AppFrame always mounts the conversation and details columns; a connected Session
 
 The PDF tab embeds the current isolated preview generation through the same-origin Host route and stays unavailable when no generation is reported. Formal Build remains an explicit later delivery step. The `/client` exports are the plugin body (`apply`/`inject`), `LayoutController`, and the four owner-share interfaces. AppFrame, the panel store, and the concession solver remain package-internal.
 
-The health tab can request a bounded formal-delivery gate that lists generation, sealed-revision, and package-verification blockers. Formal Build remains an explicit `probhub_build` tool action requiring confirmation and DSH approval.
+The health tab can request a bounded formal-delivery gate that lists generation, sealed-revision, and package-verification blockers. After a check, it shows a selected-problem publication summary with generation completeness, revision consistency, package counts, report status, and the confirmation needed before Build. Formal Build remains an explicit `probhub_build` tool action requiring confirmation and DSH approval.
 
 ## Model Experience
 

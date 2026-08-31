@@ -151,7 +151,12 @@ function deliveryBlockerLabel(code: string): string {
     generation_not_sealed: '仍有题目未 Seal',
     generation_missing: 'generation 缺少题目',
     generation_problem_missing: '当前题目不在 generation 中',
+    generation_stale: 'generation 已过期',
     status_problem_missing: '当前题目状态缺失',
+    status_stale: '题目正式产物已过期',
+    calibration_missing: '缺少校准 evidence',
+    calibration_not_current: '校准 evidence 已过期',
+    judge_qa_failed: 'Judge QA 未通过',
     status_unavailable: 'Core status 不可用',
     report_problem_missing: 'Core report 缺少当前题目',
     sealed_revision_invalid: 'sealed revision 无效',
@@ -165,6 +170,61 @@ function deliveryBlockerLabel(code: string): string {
     generation_unavailable: 'Core generation 状态不可用',
   }
   return labels[code] ?? code
+}
+
+function shortDeliveryHash(value: string | undefined): string {
+  return value === undefined ? '—' : `${value.slice(0, 12)}…`
+}
+
+function deliveryBoolean(value: boolean | undefined): string {
+  return value === true ? '是' : value === false ? '否' : '未返回'
+}
+
+function deliveryVerificationSummary(value: ProbHubDeliveryGate['checks']['packages'][string] | undefined): string {
+  if (value === undefined) return '未返回'
+  const verification = value.verification ?? value
+  const state = verification.ok ? 'passed' : verification.state ?? 'failed'
+  const counts = [
+    verification.fileCount === undefined ? undefined : `${verification.fileCount} files`,
+    verification.sampleCount === undefined ? undefined : `${verification.sampleCount} sample`,
+    verification.secretCount === undefined ? undefined : `${verification.secretCount} secret`,
+  ].filter((item): item is string => item !== undefined)
+  return counts.length === 0 ? state : `${state} · ${counts.join(' · ')}`
+}
+
+function deliveryGateLabel(gate: ProbHubDeliveryGate | undefined, problemId: string): string {
+  if (gate === undefined) return '待检查'
+  if (!gate.ok) return gate.state === 'error' ? '检查失败' : '被阻断'
+  return gate.checks.packages[problemId]?.state === 'missing' ? '可构建（ZIP待生成）' : '可交付'
+}
+
+/** Display the bounded checks that a user must review before formal Build. */
+function DeliveryDetails({ gate, problemId }: { gate: ProbHubDeliveryGate; problemId: string }) {
+  const generation = gate.checks.generation
+  const revision = gate.checks.revision[problemId]
+  const packageCheck = gate.checks.packages[problemId]
+  const packagePending = packageCheck?.state === 'missing'
+  const reportState = gate.report === undefined ? '未返回' : gate.report.ok ? 'passed' : 'failed'
+  const releaseState = gate.ok ? packagePending ? '可构建（ZIP待生成）' : '可交付' : gate.state === 'error' ? '检查失败' : '被阻断'
+  const releaseDataState = gate.ok ? packagePending ? 'pending' : 'passed' : gate.state === 'error' ? 'failed' : 'blocked'
+  return (
+    <section className={css.deliveryDetails} aria-label="正式交付摘要">
+      <div className={css.deliveryDetailsHeader}>
+        <div><strong>发布前确认摘要</strong><small>只显示当前题目和当前 generation 的有限状态。</small></div>
+        <strong className={css.deliveryDetailsState} data-state={releaseDataState}>{releaseState}</strong>
+      </div>
+      <dl className={css.deliveryDetailsList}>
+        <div><dt>generation</dt><dd>{generation.generationId ?? '—'} · {generation.state ?? '未返回'}</dd></div>
+        <div><dt>完整性</dt><dd>{generation.complete === true ? 'complete' : generation.complete === false ? 'incomplete' : '未返回'} · all sealed {deliveryBoolean(generation.allSealed)}</dd></div>
+        <div><dt>sealed revision</dt><dd data-state={revision?.consistent && revision.sealed ? 'passed' : 'blocked'}>{revision?.sealed ? 'sealed' : '未 sealed'} · {revision?.consistent ? '与 source/data 一致' : '与 source/data 不一致'}</dd></div>
+        <div><dt>source / data</dt><dd>{shortDeliveryHash(revision?.sourceHash)} / {shortDeliveryHash(revision?.dataHash)}</dd></div>
+        <div><dt>ZIP 验证</dt><dd data-state={packageCheck?.ok === true ? 'passed' : 'blocked'}>{deliveryVerificationSummary(packageCheck)}</dd></div>
+        <div><dt>Core report</dt><dd data-state={reportState === 'passed' ? 'passed' : 'blocked'}>{reportState}</dd></div>
+      </dl>
+      {generation.missing.length > 0 && <p className={css.deliveryMissing}>generation 缺少：{generation.missing.slice(0, 12).join('、')}{generation.missing.length > 12 ? ` 等 ${generation.missing.length} 道题` : ''}</p>}
+      <p className={css.deliveryConfirmation}>{gate.ok ? `${packagePending ? '当前 ZIP 尚未生成，正式 Build 会在 Core 事务中创建并验证它。' : `已检查 ${problemId}。`} 请在 AI 副驾驶中再次确认发布意图，随后通过 DSH approval 执行正式 Build。` : '解决上面的阻断原因后重新检查；正式 Build 不会绕过这些检查。'}</p>
+    </section>
+  )
 }
 
 function latestOperationJob(jobs: readonly JobView[], operation: ProbHubDeliveryOperation, problemId: string): JobView | undefined {
@@ -312,7 +372,7 @@ function WorkbenchBody({
             <li><span>Judge QA</span><strong data-state={report?.judgeQa?.state}>{deliveryStatus(report?.judgeQa?.state)}</strong></li>
             <li><span>校准</span><strong data-state={report?.calibration?.state}>{deliveryStatus(report?.calibration?.state)}</strong></li>
             <li><span>预览 generation</span><strong data-state={problem.generation === undefined ? 'missing' : 'available'}>{problem.generation === undefined ? '未组装' : 'available'}</strong></li>
-            <li><span>正式交付</span><strong data-state={deliveryGate === undefined ? 'manual' : deliveryGate.ok ? 'passed' : deliveryGate.state === 'error' ? 'failed' : 'blocked'}>{deliveryGate === undefined ? '待检查' : deliveryGate.ok ? '可交付' : deliveryGate.state === 'error' ? '检查失败' : '被阻断'}</strong></li>
+            <li><span>正式交付</span><strong data-state={deliveryGate === undefined ? 'manual' : deliveryGate.ok ? deliveryGate.checks.packages[problem.id]?.state === 'missing' ? 'pending' : 'passed' : deliveryGate.state === 'error' ? 'failed' : 'blocked'}>{deliveryGateLabel(deliveryGate, problem.id)}</strong></li>
           </ul>
           <div className={css.deliveryActions}>
             {(['judge', 'stress', 'judge-qa', 'mutation', 'checkpoint', 'seal', 'assemble'] as const).map((operation) => {
@@ -330,6 +390,7 @@ function WorkbenchBody({
           {deliveryGate && !deliveryGate.ok && deliveryGate.blockers.length > 0 && <ul className={css.deliveryBlockers} aria-label="正式交付阻断原因">
             {deliveryGate.blockers.slice(0, 12).map((blocker, index) => <li key={`${blocker.code}-${blocker.problemId ?? 'workspace'}-${index}`}>{deliveryBlockerLabel(blocker.code)}{blocker.problemId ? ` · ${blocker.problemId}` : ''}</li>)}
           </ul>}
+          {deliveryGate && <DeliveryDetails gate={deliveryGate} problemId={problem.id} />}
           {deliveryError && <div className={css.editorError} role="alert">{deliveryError}</div>}
           {deliveryMessage && <div className={css.editorSuccess} role="status">{deliveryMessage}</div>}
         </section>

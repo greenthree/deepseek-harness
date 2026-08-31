@@ -144,14 +144,15 @@ describe('ProbHub workbench report projection', () => {
             state: 'blocked',
             problemIds: ['A01'],
             checks: {
-              revision: { A01: { consistent: false } },
-              generation: { state: 'draft', complete: false, allSealed: false, missing: ['A01'] },
-              packages: { A01: { state: 'missing', ok: false } },
+              revision: { A01: { sealed: false, consistent: false, sourceHash: 'a'.repeat(64), dataHash: 'b'.repeat(64) } },
+              generation: { generationId: 'gen-1', state: 'draft', complete: false, allSealed: false, missing: [{ problemId: 'A01', reason: 'no checkpoint' }], staleFields: [], problems: [] },
+              packages: { A01: { state: 'missing', ok: false, verification: { ok: false, state: 'missing' } } },
             },
             blockers: [
               { code: 'generation_incomplete' },
               { code: 'sealed_revision_invalid', problemId: 'A01' },
             ],
+            report: { ok: true },
           },
         }), { status: 200 })
       }
@@ -167,6 +168,36 @@ describe('ProbHub workbench report projection', () => {
     const blockers = await screen.findByRole('list', { name: '正式交付阻断原因' })
     expect(blockers.textContent).toContain('预览 generation 未完成')
     expect(blockers.textContent).toContain('sealed revision 无效 · A01')
+    const details = screen.getByRole('region', { name: '正式交付摘要' })
+    expect(details.textContent).toContain('gen-1 · draft')
+    expect(details.textContent).toContain('source / data')
+    expect(details.textContent).toContain('Core report')
+    expect(details.textContent).toContain('passed')
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/delivery-check'))).toBe(true)
+  })
+
+  it('rejects malformed nested delivery details instead of rendering them', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input) => {
+      if (requestUrl(input).includes('/probhub/api/delivery-check')) {
+        return new Response(JSON.stringify({
+          delivery: {
+            ok: true,
+            state: 'ready',
+            problemIds: ['A01'],
+            checks: { revision: { A01: { sealed: 'yes', consistent: true } }, generation: {}, packages: {} },
+            blockers: [],
+          },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ state: 'ready', workspaceId: 'workspace-a', problems: [{ id: 'A01', title: 'Alpha', status: 'current' }] }), { status: 200 })
+    })
+    await act(async () => { await probHubController.refresh('session-a') })
+    render(<ProbHubWorkbench sessionId="session-a" useSessions={useSessionsWithJobs()} />)
+    await act(async () => { screen.getByRole('button', { name: '健康与评测' }).click() })
+    await act(async () => { screen.getByRole('button', { name: '检查正式交付' }).click() })
+    expect((await screen.findByRole('alert')).textContent).toContain('交付门禁返回了无效检查详情')
+    expect(screen.queryByRole('region', { name: '正式交付摘要' })).toBeNull()
     expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).includes('/probhub/api/delivery-check'))).toBe(true)
   })
 

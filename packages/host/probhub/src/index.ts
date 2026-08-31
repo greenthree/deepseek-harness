@@ -178,6 +178,12 @@ function isProbHubTabRequestReason(value: unknown): value is ProbHubTabRequestRe
  *
  * @returns `true` when the event was emitted, `false` when identity or payload
  * validation failed.
+ * @param ctx - Harness context used to emit the typed navigation event.
+ * @param agent - Live Agent that owns the browser Session.
+ * @param problemId - Validated Schema v1 problem id.
+ * @param tab - Workbench tab to focus.
+ * @param reason - Source category for the navigation hint.
+ * @param source - Optional bounded tool name that caused the hint.
  */
 export function emitProbHubTabRequest(
   ctx: Context,
@@ -886,7 +892,11 @@ async function runProblemOperation(
   })
 }
 
-/** Resolve a formal package path from the canonical workspace without accepting user paths. */
+/** Resolve a formal package path from the canonical workspace without accepting user paths.
+ * @param workspace - Canonical Schema v1 workspace directory.
+ * @param problemId - Validated problem id whose package is requested.
+ * @returns The canonical package path.
+ */
 export async function resolvePackagePath(workspace: string, problemId: string): Promise<string> {
   if (!PROBLEM_ID.test(problemId)) throw new Error('package_invalid')
   const path = join(workspace, `${problemId}.zip`)
@@ -935,7 +945,7 @@ function deliveryBlock(
   blockers.push({ code, ...(problemId === undefined ? {} : { problemId }), ...(detail === undefined ? {} : { detail }) })
 }
 
-function projectVerification(value: unknown): Record<string, unknown> {
+function projectVerification(value: unknown, includeNested = true): Record<string, unknown> {
   if (!isRecord(value)) return { ok: false, state: 'invalid' }
   const result: Record<string, unknown> = { ok: value.ok === true, state: value.ok === true ? 'passed' : 'failed' }
   for (const key of ['code', 'status', 'verification_scope'] as const) {
@@ -947,7 +957,19 @@ function projectVerification(value: unknown): Record<string, unknown> {
     if (typeof count === 'number' && Number.isFinite(count)) result[key] = Math.max(0, Math.min(1_000_000, Math.trunc(count)))
   }
   const verification = isRecord(value.verification) ? value.verification : undefined
-  if (verification !== undefined && typeof verification.ok === 'boolean') result.ok = verification.ok
+  if (verification !== undefined && includeNested) {
+    const nested = projectVerification(verification, false)
+    result.verification = nested
+    if (typeof verification.ok === 'boolean') result.ok = verification.ok
+  }
+  if (isRecord(value.stats)) {
+    const stats: Record<string, number> = {}
+    for (const [key, raw] of Object.entries(value.stats).slice(0, 64)) {
+      if (!/count|files|entries|cases/i.test(key) || typeof raw !== 'number' || !Number.isFinite(raw)) continue
+      stats[key] = Math.max(0, Math.min(1_000_000, Math.trunc(raw)))
+    }
+    if (Object.keys(stats).length > 0) result.stats = stats
+  }
   return result
 }
 
@@ -955,6 +977,12 @@ function projectVerification(value: unknown): Record<string, unknown> {
  * Read and validate the prerequisites for formal Core publication.
  * Missing existing ZIPs are reported for the UI but do not block the first
  * build; Core creates and verifies them transactionally during publication.
+ * @param ctx - Harness context providing Core subprocess and sandbox services.
+ * @param config - Core runner limits and executable configuration.
+ * @param workspace - Canonical workspace identity.
+ * @param session - Session identity used for policy and ownership.
+ * @param problemIds - Distinct problem ids included in the check.
+ * @returns The bounded formal-delivery gate result.
  */
 export async function checkDeliveryGate(
   ctx: Context,
@@ -986,23 +1014,51 @@ export async function checkDeliveryGate(
   const generationManifest = generationValue !== undefined && isRecord(generationValue.manifest) ? generationValue.manifest : undefined
   const generationId = deliveryMarker(generationValue?.generation_id)
   const generationState = deliveryMarker(generationValue?.state) ?? 'none'
+  const generationStaleFields = Array.isArray(generationValue?.stale_fields)
+    ? generationValue.stale_fields.slice(0, 64).flatMap((item: unknown) => {
+      const marker = deliveryMarker(item)
+      return marker === undefined ? [] : [marker]
+    })
+    : []
+  const generationStaleFieldsInvalid = generationValue?.stale_fields !== undefined
+    && (!Array.isArray(generationValue.stale_fields) || generationStaleFields.length !== generationValue.stale_fields.length)
   const generationMissing = generationManifest !== undefined && Array.isArray(generationManifest.missing)
-    ? generationManifest.missing.slice(0, 256).flatMap((item: unknown) => isRecord(item) && typeof item.problem_id === 'string' ? [item.problem_id] : [])
+    ? generationManifest.missing.slice(0, 256).flatMap((item: unknown) => {
+      if (!isRecord(item)) return []
+      const problemId = deliveryMarker(item.problem_id)
+      return problemId === undefined ? [] : [{ problemId, ...(typeof item.reason === 'string' ? { reason: safeText(item.reason) } : {}) }]
+    })
+    : []
+  const generationMissingInvalid = generationManifest?.missing !== undefined
+    && (!Array.isArray(generationManifest.missing) || generationMissing.length !== generationManifest.missing.length)
+  const generationProblems = generationManifest !== undefined && Array.isArray(generationManifest.problems)
+    ? generationManifest.problems.slice(0, 256).flatMap((item: unknown) => {
+      if (!isRecord(item) || deliveryMarker(item.problem_id) === undefined) return []
+      const row: Record<string, unknown> = { problemId: deliveryMarker(item.problem_id) }
+      for (const key of ['state', 'revision_id', 'source_hash', 'data_hash'] as const) {
+        const marker = deliveryMarker(item[key])
+        if (marker !== undefined) row[key === 'revision_id' ? 'revisionId' : key === 'source_hash' ? 'sourceHash' : key === 'data_hash' ? 'dataHash' : 'state'] = marker
+      }
+      return [row]
+    })
     : []
   checks.generation = {
-    ok: generation.adapterOk && generation.coreOk && generationManifest !== undefined,
+    ok: generation.adapterOk && generation.coreOk && generationManifest !== undefined && generationId !== undefined,
     ...(generationId === undefined ? {} : { generationId }),
     state: generationState,
     complete: generationManifest?.complete === true,
     allSealed: generationManifest?.all_sealed === true,
     missing: generationMissing,
+    problems: generationProblems,
+    staleFields: generationStaleFields,
   }
-  if (!generation.adapterOk || !generation.coreOk || generationManifest === undefined) deliveryBlock(blockers, 'generation_invalid')
+  if (!generation.adapterOk || !generation.coreOk || generationManifest === undefined || generationId === undefined || generationStaleFieldsInvalid || generationMissingInvalid) deliveryBlock(blockers, 'generation_invalid')
   else {
-    if (generationState === 'stale' || generationState === 'invalid' || generationState === 'none') deliveryBlock(blockers, 'generation_invalid')
+    if (generationState === 'stale' || generationStaleFields.length > 0) deliveryBlock(blockers, 'generation_stale')
+    else if (generationState !== 'sealed-preview' && generationState !== 'draft') deliveryBlock(blockers, 'generation_invalid')
     if (generationManifest.complete !== true) deliveryBlock(blockers, 'generation_incomplete')
     if (generationManifest.all_sealed !== true) deliveryBlock(blockers, 'generation_not_sealed')
-    for (const missing of generationMissing) deliveryBlock(blockers, 'generation_missing', missing)
+    for (const missing of generationMissing) deliveryBlock(blockers, 'generation_missing', missing.problemId, missing.reason)
   }
 
   const statusValue = isRecord(status.value) ? status.value : undefined
@@ -1014,6 +1070,24 @@ export async function checkDeliveryGate(
   if (allIds.length === 0) deliveryBlock(blockers, 'status_unavailable')
   const reportValue = report.adapterOk && isRecord(report.value) ? projectReport(report.value) : undefined
   if (reportValue !== undefined && reportValue.ok !== true) deliveryBlock(blockers, 'report_failed')
+  const rawReportProblems = reportValue !== undefined && Array.isArray(reportValue.problems)
+    ? reportValue.problems.flatMap((item: unknown) => isRecord(item) && typeof item.id === 'string' ? [item.id] : [])
+    : report.value !== undefined && isRecord(report.value) && Array.isArray(report.value.problems)
+      ? report.value.problems.flatMap((item: unknown) => isRecord(item) && typeof item.id === 'string' ? [item.id] : [])
+      : []
+  const projectedReportHasProblems = reportValue !== undefined
+    && Array.isArray(reportValue.problems)
+  const rawReportHasProblems = report.value !== undefined
+    && isRecord(report.value)
+    && Array.isArray(report.value.problems)
+  const reportHasProblemList = projectedReportHasProblems || rawReportHasProblems
+  if (reportValue !== undefined || report.value !== undefined) {
+    if (!reportHasProblemList) deliveryBlock(blockers, 'report_problem_missing')
+    for (const id of requestedIds) if (!rawReportProblems.includes(id)) deliveryBlock(blockers, 'report_problem_missing', id)
+  }
+  const reportRows = report.value !== undefined && isRecord(report.value) && Array.isArray(report.value.problems)
+    ? report.value.problems.filter(isRecord)
+    : []
   for (const id of allIds) {
     const current = deliveryProblemRecord(statusValue, id)
     const staged = deliveryGenerationProblem(generationValue, id)
@@ -1032,6 +1106,25 @@ export async function checkDeliveryGate(
       && stagedSourceHash === sourceHash && stagedDataHash === dataHash
     checks.revision[id] = revision
     if (current === undefined) deliveryBlock(blockers, 'status_problem_missing', id)
+    const staleFields = Array.isArray(current?.stale_fields)
+      ? current.stale_fields.slice(0, 64).flatMap((item: unknown) => deliveryMarker(item) ?? [])
+      : []
+    if (current !== undefined && (revision.status !== 'current' || staleFields.length > 0)) {
+      const statusDetail = typeof revision.status === 'string' ? revision.status : undefined
+      deliveryBlock(blockers, 'status_stale', id, staleFields.length === 0 ? statusDetail : staleFields.join(','))
+    }
+    const reportRow = reportRows.find(item => item.id === id)
+    if (reportRow !== undefined) {
+      const calibration = isRecord(reportRow.calibration) ? reportRow.calibration : undefined
+      const calibrationState = deliveryMarker(calibration?.state ?? calibration?.status)
+      if (calibrationState === undefined || calibrationState === 'missing') deliveryBlock(blockers, 'calibration_missing', id)
+      else if (!['current', 'passed', 'ready'].includes(calibrationState)) deliveryBlock(blockers, 'calibration_not_current', id, calibrationState)
+      const judgeQa = isRecord(reportRow.judge_qa) ? reportRow.judge_qa : undefined
+      const judgeQaState = deliveryMarker(judgeQa?.state ?? judgeQa?.status)
+      if (judgeQaState !== undefined && !['current', 'passed', 'ready', 'not-configured'].includes(judgeQaState)) {
+        deliveryBlock(blockers, 'judge_qa_failed', id, judgeQaState)
+      }
+    }
     if (staged === undefined) deliveryBlock(blockers, 'generation_problem_missing', id)
     if (staged !== undefined && staged.state !== 'sealed') deliveryBlock(blockers, 'sealed_revision_invalid', id)
     if (sealedRevision === undefined) deliveryBlock(blockers, 'sealed_revision_missing', id)
@@ -1047,7 +1140,7 @@ export async function checkDeliveryGate(
         deliveryBlock(blockers, 'package_verify_unavailable', id, verification.error)
       } else {
         Object.assign(packageResult, projectVerification(verification.value))
-        if (!verification.coreOk) deliveryBlock(blockers, 'package_verify_failed', id)
+        if (!verification.coreOk || packageResult.ok !== true) deliveryBlock(blockers, 'package_verify_failed', id)
       }
     } catch (error) {
       packageResult.state = error instanceof Error && error.message.startsWith('generated package is missing') ? 'missing' : 'invalid'
@@ -1858,7 +1951,7 @@ export function startCoreJob(
   request: CoreJobRequest,
   owner: Agent,
   label: string,
-) {
+): JobId {
   return ctx.jobs.start({
     kind: 'probhub',
     label,

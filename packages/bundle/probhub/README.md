@@ -33,7 +33,7 @@ The matching downstream Web client renders the workbench through its existing la
 
 #### What the model sees
 
-After the Bundle is mounted, the model can start validation jobs (`probhub_judge`, `probhub_stress`, `probhub_judge_qa`, `probhub_mutation`), delivery jobs (`probhub_checkpoint`, `probhub_seal`, `probhub_assemble`, `probhub_build`), and read-only queries (`probhub_generation_status`, `probhub_report`, `probhub_verify_package`). Each background job returns a generic id; use `job_output` to collect bounded results and `job_kill` to request cancellation. `probhub_build` is the only operation that publishes formal PDF/ZIP/metadata/Manifest artifacts and requires explicit confirmation plus approval. `probhub_verify_package` derives a canonical workspace ZIP from `problem_id` and never accepts an arbitrary path.
+After the Bundle is mounted, the model can start validation jobs (`probhub_judge`, `probhub_stress`, `probhub_judge_qa`, `probhub_mutation`), delivery jobs (`probhub_checkpoint`, `probhub_seal`, `probhub_assemble`, `probhub_build`), and read-only queries (`probhub_delivery_check`, `probhub_generation_status`, `probhub_report`, `probhub_verify_package`). Each background job returns a generic id; use `job_output` to collect bounded results and `job_kill` to request cancellation. `probhub_delivery_check` combines the current sealed revision, preview generation, report, and canonical package checks before publication. `probhub_build` is the only operation that publishes formal PDF/ZIP/metadata/Manifest artifacts and requires explicit confirmation plus approval. `probhub_verify_package` derives a canonical workspace ZIP from `problem_id` and never accepts an arbitrary path.
 
 #### Token effect
 
