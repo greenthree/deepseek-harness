@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
-import SessionStore from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
@@ -268,6 +268,19 @@ function forwardedSettings(ns: string): HostFrame {
 }
 
 describe('settings domain', () => {
+  it('forwards a ProbHub tab hint through the existing remote-event carrier', async () => {
+    const ctx = await harness()
+    const api = createApiProxy(ctx, DEFAULTS)
+    const frames = await collectHost(api, ['host/remote-event'], 1, async () => {
+      ctx.emit('probhub/tab-requested', SessionId('session-a'), 'A01', 'health', 'tool-result', 'probhub_report')
+    })
+    expect(frames).toEqual([{
+      type: 'host/remote-event',
+      event: 'probhub/tab-requested',
+      args: ['session-a', 'A01', 'health', 'tool-result', 'probhub_report'],
+    }])
+  })
+
   it('reports an actionable error when no settings provider is mounted', async () => {
     const ctx = await harness({ settings: false })
     const api = createApiProxy(ctx, DEFAULTS)

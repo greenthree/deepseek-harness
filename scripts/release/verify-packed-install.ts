@@ -18,7 +18,7 @@
 
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { releaseFamily } from './families.ts'
@@ -73,7 +73,7 @@ function main(): void {
     allowPositionals: false,
   })
   if (values.family === undefined || values.from === undefined || values.from.length === 0) {
-    throw new Error('usage: verify-packed-install.ts --family <dsh|vendor> --from <packed directory> [--from ...]')
+    throw new Error('usage: verify-packed-install.ts --family <dsh|probhub|vendor> --from <packed directory> [--from ...]')
   }
 
   const family = releaseFamily(values.family)
@@ -104,8 +104,11 @@ function main(): void {
     // that cannot install them must still start — which is what optional means
     // here. Their entry package is a plain dependency of dsh-sandbox-local, so
     // its tarball is supplied through --from.
-    capture('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'],
-      { cwd: consumerRoot, env: environment })
+    const installArgs = ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional']
+    const npm = process.platform === 'win32'
+      ? { command: process.execPath, args: [resolve(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), ...installArgs] }
+      : { command: 'npm', args: installArgs }
+    capture(npm.command, npm.args, { cwd: consumerRoot, env: environment })
 
     const bin = join(consumerRoot, 'node_modules', ...entry.packageName.split('/'), entry.binPath)
     const version = capture(process.execPath, [bin, '--version'], { cwd: consumerRoot, env: environment })

@@ -16,6 +16,10 @@ import type { PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/ds
 import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
 import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
+import { ProbHubWorkbench } from './ProbHubWorkbench.tsx'
+import type { ProbHubWorkbenchProps } from './ProbHubWorkbench.tsx'
+import { probHubController, useProbHub } from './probhub-controller.ts'
+import type { ProbHubControllerState } from './probhub-controller.ts'
 
 /** Full composed props: runtime share + child-slot render share + store share. */
 export type AppFrameProps =
@@ -24,8 +28,16 @@ export type AppFrameProps =
   & PropsStore<ReturnType<typeof createLayoutStore>>
 
 /** Center column grid item (session-body building block). */
-function CenterColumn(props: { children?: ReactNode }) {
-  return <div className={css.centerCol}>{props.children}</div>
+function CenterColumn(props: {
+  children?: ReactNode
+  sessionId?: string | undefined
+  useSessions: NonNullable<ProbHubWorkbenchProps['useSessions']>
+  probHub: ProbHubControllerState
+}) {
+  const content = props.probHub.snapshot.state === 'unavailable'
+    ? props.children
+    : <ProbHubWorkbench sessionId={props.sessionId} useSessions={props.useSessions}>{props.children}</ProbHubWorkbench>
+  return <div className={css.centerCol}>{content}</div>
 }
 
 /** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
@@ -91,10 +103,20 @@ export function AppFrame({
   renderSlot,
 }: AppFrameProps) {
   const panels = useStore(s => s)
+  // ProbHub is workspace-scoped, so it must follow the current Session even
+  // while that session is still blank. The details column intentionally keeps
+  // its existing non-blank gate, but using that gate for the workbench leaves
+  // a newly-created workspace stuck at "未连接" until the first message.
+  const probHubSession = useSessions(s => s.current)
   const detailsSession = useSessions((s) => {
     const current = s.current
     return current !== undefined && s.byId[current]?.blank === false ? current : undefined
   })
+  const probHub = useProbHub()
+  useEffect(() => {
+    void probHubController.refresh(probHubSession)
+    return () => { void probHubController.refresh(undefined) }
+  }, [probHubSession])
   const frameRef = useRef<HTMLDivElement | null>(null)
   const [viewport, setViewport] = useState(() => window.innerWidth)
 
@@ -179,6 +201,7 @@ export function AppFrame({
         {renderSlot('sidebar', {
           collapsed: sidebarCollapsed,
           width: cols.sidebar,
+          probHub,
         })}
       </div>
       <>
@@ -187,7 +210,7 @@ export function AppFrame({
             the shell's own pending rendering. The conversation
             is session-maybe; the strict details entry naturally renders
             empty while no session is current. */}
-        <CenterColumn>{renderSlot('conversation', {})}</CenterColumn>
+        <CenterColumn sessionId={probHubSession} useSessions={useSessions} probHub={probHub}>{renderSlot('conversation', {})}</CenterColumn>
         <DetailsColumn>{renderSlot('details', {})}</DetailsColumn>
       </>
       <div className={css.overlayLayer} data-shell-overlay>

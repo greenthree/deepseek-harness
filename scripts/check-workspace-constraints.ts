@@ -10,6 +10,7 @@ import { join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { hasTypertRemoteNavigation, isForbiddenPublicationFile } from './publication-payload.ts'
 import { collectProjectReferenceFaceViolations } from './project-reference-faces.ts'
+import { PROBHUB_PACKAGE_DIRECTORIES, PROBHUB_PACKAGE_NAMES } from './release/probhub.ts'
 
 const root = resolve(import.meta.dirname, '..')
 // vendor/* is single-level; packages/<group>/<pkg> nests one level deeper
@@ -54,7 +55,6 @@ const experimentalPackageDirectory = /^packages\/experimental\/[^/]+$/
 const experimentalPackageNamePrefix = '@deepseek-ai/dsh-experimental-'
 /** Directories whose packages this repository publishes: one release member each. */
 const releaseMemberDirectory = /^(?:packages\/(?!experimental\/)[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
-
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
   '@deepseek-ai/dsh': ['lib/*.js', 'config'],
@@ -141,6 +141,9 @@ function workspaceManifests(): WorkspaceManifest[] {
 }
 
 const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
+  // The optional model-facing validation consumer is exposed as a published
+  // subpath and bundled beside the host bridge entry.
+  '@deepseek-ai/dsh-host-probhub': ['lib/tools.js'],
   // Statically linked client libraries keep their stylesheets next to the emitted
   // JavaScript, which imports them by relative path: the compile shell runs
   // them through its own CSS pipeline, so the sheets are published artifacts.
@@ -280,11 +283,11 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
     // package, and the repository field is how a consumer finds the source of
     // the package it installed.
     //
-    // Access is per release sequence, not per scope: the vendored framework and
-    // the Landlock packages publish publicly because outside consumers install
-    // them, while the dsh family stays restricted until its own sequence goes
-    // public. A mixed scope is why no publish path passes `--access` — one flag
-    // cannot serve both, so each packed manifest decides
+    // Access is per release sequence, not per scope: the vendored framework,
+    // ProbHub integration, and Landlock packages publish publicly because
+    // outside consumers install them, while the dsh family stays restricted.
+    // A mixed scope is why no publish path passes `--access` — one flag cannot
+    // serve both, so each packed manifest decides
     // ([rationale](../.agents/notes/implemented/process/2026-08-13-public-vendor-and-native-sequences.md)).
     if (manifest.private === true) {
       errors.push(`${label}: release member must not set "private": true`)
@@ -333,6 +336,7 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
   }
 
   if (dir.startsWith('packages/') && manifest.name?.startsWith('@deepseek-ai/dsh-')) {
+    const isProbhubPackage = PROBHUB_PACKAGE_NAMES.has(manifest.name)
     const peer = manifest.peerDependencies?.['@deepseek-ai/cordis']
     const dev = manifest.devDependencies?.['@deepseek-ai/cordis']
 
@@ -341,7 +345,7 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
     if (peer && dev && peer !== dev) {
       errors.push(`${label}: @deepseek-ai/cordis peer (${peer}) and dev (${dev}) ranges must match`)
     }
-    if (manifest.version !== repositoryVersion) {
+    if (!isProbhubPackage && manifest.version !== repositoryVersion) {
       errors.push(`${label}: package.json version must match root version ${repositoryVersion ?? '(missing)'}`)
     }
     if (manifest.type !== 'module') {
@@ -379,6 +383,29 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
   }
 
   return errors.map(error => `${relative(root, join(root, dir, 'package.json'))}: ${error}`)
+}
+
+/** Enforce the shared but root-independent version line of the ProbHub family. */
+export function checkProbhubVersions(manifests: readonly WorkspaceManifest[]): string[] {
+  const members = manifests.filter(entry => entry.manifest.name !== undefined && PROBHUB_PACKAGE_NAMES.has(entry.manifest.name))
+  const errors: string[] = []
+  if (members.length !== PROBHUB_PACKAGE_NAMES.size) {
+    errors.push(`probhub release family must contain exactly ${String(PROBHUB_PACKAGE_NAMES.size)} packages`)
+  }
+  const versions = new Set(members.map(entry => entry.manifest.version))
+  if ([...versions].some(version => typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version))) {
+    errors.push('probhub release members must declare valid semver versions')
+  }
+  if (versions.size > 1) {
+    errors.push(`probhub release members must share one version: ${members.map(entry => `${entry.dir}: ${entry.manifest.version ?? '(missing)'}`).join(', ')}`)
+  }
+  for (const [name, expectedDirectory] of PROBHUB_PACKAGE_DIRECTORIES) {
+    const member = members.find(entry => entry.manifest.name === name)
+    if (member !== undefined && member.dir !== expectedDirectory) {
+      errors.push(`${name}: probhub release member must live at ${expectedDirectory}, got ${member.dir}`)
+    }
+  }
+  return errors
 }
 
 /**
@@ -476,6 +503,7 @@ export function main(): void {
   const errors = [
     ...checkRepositoryVersion(),
     ...manifests.flatMap(checkWorkspace),
+    ...checkProbhubVersions(manifests),
     ...checkWorkspaceProtocol(manifests),
     ...checkExperimentalDependencyIsolation(dependencyManifests),
     ...checkHierarchyShape(),

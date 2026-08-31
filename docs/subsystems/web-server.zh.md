@@ -123,6 +123,36 @@ renderIndex(html: string): string
 
 Source: [`packages/host/webserver/src/index.ts`](../../packages/host/webserver/src/index.ts)
 
+<a id="probhub-events"></a>
+
+### `probhub/*` events
+
+<a id="probhubtab-requested--emit"></a>
+
+#### `probhub/tab-requested` — emit
+
+Ask the current Client workbench to locate one already-known problem tab. The event is a one-way UI hint: it never selects a workspace, mutates source files, or invokes a Core operation. Host producers must derive `sessionId` from the calling Agent and validate `problemId` before emit.
+
+```ts cordis-catalog
+/**
+ * Ask the current Client workbench to locate one already-known problem tab.
+ * The event is a one-way UI hint: it never selects a workspace, mutates
+ * source files, or invokes a Core operation. Host producers must derive
+ * `sessionId` from the calling Agent and validate `problemId` before emit.
+ * @param sessionId - the calling Agent's shared Session identity.
+ * @param problemId - a validated Schema v1 problem id.
+ * @param tab - stable tab key (`statement`, `health`, or `pdf`).
+ * @param reason - whether the hint came from an AI suggestion or tool result.
+ * @param source - optional bounded producer/tool name for diagnostics.
+ * @mode emit
+ */
+'probhub/tab-requested'(sessionId: SessionId, problemId: string, tab: ProbHubTab, reason: ProbHubTabRequestReason, source?: string): void
+```
+
+Types: [SessionId](core.zh.md)
+
+Source: [`packages/api/remotes/src/types.ts`](../../packages/api/remotes/src/types.ts)
+
 <a id="webserver-events"></a>
 
 ### `webserver/*` events

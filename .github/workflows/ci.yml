@@ -38,11 +38,15 @@ jobs:
   # job below.
   node-24:
     if: github.event_name == 'pull_request'
+    # Personal-fork validation override. The downstream fork does not own the
+    # production dsh-ubuntu pool; never carry this runner choice upstream.
     runs-on: >-
-      ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
-          && github.event.pull_request.user.login != 'dependabot[bot]'
-          && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+      ${{ github.repository_owner == 'greenthree'
+          && 'ubuntu-latest'
+          || (vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
+              && github.event.pull_request.user.login != 'dependabot[bot]'
+              && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
+              || 'dsh-ubuntu-24-04-16core') }}
     name: node 24 / static
     env:
       DSH_GATE_CONCURRENCY: '8'
@@ -90,11 +94,14 @@ jobs:
 
   node-24-coverage:
     if: github.event_name == 'pull_request'
+    # Personal-fork validation override; see node-24 above.
     runs-on: >-
-      ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
-          && github.event.pull_request.user.login != 'dependabot[bot]'
-          && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+      ${{ github.repository_owner == 'greenthree'
+          && 'ubuntu-latest'
+          || (vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
+              && github.event.pull_request.user.login != 'dependabot[bot]'
+              && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
+              || 'dsh-ubuntu-24-04-16core') }}
     name: node 24 / coverage
     env:
       # Partitioning replaces the instrumented share; this budget gives the
@@ -152,11 +159,14 @@ jobs:
 
   node-24-consumers:
     if: github.event_name == 'pull_request'
+    # Personal-fork validation override; see node-24 above.
     runs-on: >-
-      ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
-          && github.event.pull_request.user.login != 'dependabot[bot]'
-          && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
-          || 'dsh-ubuntu-24-04-16core' }}
+      ${{ github.repository_owner == 'greenthree'
+          && 'ubuntu-latest'
+          || (vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
+              && github.event.pull_request.user.login != 'dependabot[bot]'
+              && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
+              || 'dsh-ubuntu-24-04-16core') }}
     name: node 24 / snapshots and artifacts
     env:
       DSH_GATE_CONCURRENCY: '8'
@@ -408,11 +418,14 @@ jobs:
   # and the all-checks-passed verdict above.
   windows-native:
     if: github.event_name == 'pull_request'
+    # Personal-fork validation override; the fork has no dsh-windows pool.
     runs-on: >-
-      ${{ vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted'
-          && github.event.pull_request.user.login != 'dependabot[bot]'
-          && fromJSON('["self-hosted", "dsh-win-ci", "windows"]')
-          || 'dsh-windows-2025-16core' }}
+      ${{ github.repository_owner == 'greenthree'
+          && 'windows-latest'
+          || (vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted'
+              && github.event.pull_request.user.login != 'dependabot[bot]'
+              && fromJSON('["self-hosted", "dsh-win-ci", "windows"]')
+              || 'dsh-windows-2025-16core') }}
     name: windows node 24 / native complete
     timeout-minutes: 120
     env:

@@ -296,6 +296,22 @@
   padding-left: 0;
 }
 
+.probHubArea { flex: none; min-width: 0; max-height: 32%; overflow: auto; border-top: 1px solid var(--dsw-alias-border-l1); }
+.collapsed .probHubArea { display: none; }
+
+.probHubSection { padding: 8px 4px 10px; }
+.probHubHeading { display: flex; justify-content: space-between; padding: 0 8px 6px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.probHubItem { width: 100%; display: grid; grid-template-columns: 30px minmax(0, 1fr) 6px; align-items: center; gap: 5px; border: 0; border-radius: 7px; padding: 7px 8px; background: transparent; color: var(--dsw-alias-label-primary); text-align: left; cursor: pointer; }
+.probHubItem:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.probHubId, .probHubTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.probHubId { color: var(--dsw-alias-label-secondary); font-family: var(--ds-font-family-code); font-size: 10px; }
+.probHubTitle { font-size: 12px; }
+.probHubStatus { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-static-neutral-400); }
+.probHubStatus[data-status='current'] { background: var(--dsw-static-green-500); }
+.probHubStatus[data-status='stale'], .probHubStatus[data-status='warn'] { background: var(--dsw-static-amber-500); }
+.probHubStatus[data-status='blocked'] { background: var(--dsw-static-red-500); }
+.probHubNotice { padding: 8px 10px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+
 /* Footer seats: additive actions stack above Settings. Each occupant owns its
    button geometry and hover chrome. */
 .footArea {

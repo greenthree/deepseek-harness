@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { officialClientBuildEnvironment, writeClientBuildRecord } from '../client-build-environment.ts'
 import { releaseFamily, type ReleaseMember } from './families.ts'
-import { compareVersions, nextVendorVersion, planShared, reachesPayload } from './bump.ts'
+import { compareVersions, nextVendorVersion, planIndependentShared, planShared, reachesPayload } from './bump.ts'
 
 /**
  * A release member standing in for a manifest on disk.
@@ -46,6 +46,65 @@ describe('release families', () => {
 
     expect(members.some(member => member.directory.startsWith('packages/experimental/'))).toBe(false)
     expect(members.map(member => member.name)).not.toContain('@deepseek-ai/dsh-experimental-agent-team')
+  })
+
+  it('keeps the standalone ProbHub packages out of dsh and in their own family', () => {
+    const root = resolve(import.meta.dirname, '../..')
+    const dsh = releaseFamily('dsh').members(root)
+    const probhub = releaseFamily('probhub').members(root)
+
+    expect(dsh.map(member => member.name)).not.toContain('@deepseek-ai/dsh-host-probhub')
+    expect(dsh.map(member => member.name)).not.toContain('@deepseek-ai/dsh-probhub')
+    expect(probhub.map(member => member.name)).toEqual([
+      '@deepseek-ai/dsh-probhub',
+      '@deepseek-ai/dsh-host-probhub',
+    ])
+    expect(releaseFamily('probhub').tagFor(probhub[0]!)).toBe('probhub-v0.1.1-rc.2')
+  })
+
+  it('requires the paired ProbHub packages to share one version', () => {
+    const probhub = releaseFamily('probhub')
+    const members = [
+      member('packages/host/probhub', '@deepseek-ai/dsh-host-probhub'),
+      { ...member('packages/bundle/probhub', '@deepseek-ai/dsh-probhub'), version: '0.0.2' },
+    ]
+
+    expect(() => { probhub.verifyVersions(members) }).toThrow(/must share one version/)
+    expect(() => { probhub.verifyVersions([members[0]!]) }).not.toThrow()
+    expect(() => { probhub.verifyVersions([{ ...members[0]!, version: 'latest' }]) }).toThrow(/unpublishable version/)
+  })
+
+  it('plans a standalone ProbHub bump without the dsh root or private packages', () => {
+    const family = releaseFamily('probhub')
+    const members = [
+      member('packages/bundle/probhub', '@deepseek-ai/dsh-probhub'),
+      member('packages/host/probhub', '@deepseek-ai/dsh-host-probhub'),
+    ]
+    const plan = planIndependentShared(family, members, 'patch')
+
+    expect(plan.version).toBe('0.0.2')
+    expect(plan.planned.map(entry => ({ path: entry.manifestPath, tag: entry.tag }))).toEqual([
+      { path: 'packages/bundle/probhub/package.json', tag: 'probhub-v0.0.2' },
+      { path: 'packages/host/probhub/package.json', tag: 'probhub-v0.0.2' },
+    ])
+  })
+
+  it('requires built Host and Bundle artifacts before ProbHub packing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-artifacts-'))
+    roots.push(root)
+    for (const directory of ['packages/host/probhub', 'packages/bundle/probhub']) {
+      const name = directory.includes('/host/') ? '@deepseek-ai/dsh-host-probhub' : '@deepseek-ai/dsh-probhub'
+      write(join(root, directory, 'package.json'), JSON.stringify({ name, version: '1.0.0' }))
+      for (const file of ['lib/index.js', 'lib/invariant.js', 'lib/types/index.d.ts', 'lib/types/invariant.d.ts']) {
+        write(join(root, directory, file), '')
+      }
+    }
+    write(join(root, 'packages/host/probhub/lib/tools.js'), '')
+    write(join(root, 'packages/host/probhub/lib/types/tools.d.ts'), '')
+
+    expect(() => { releaseFamily('probhub').verifyBuildArtifacts(root) }).not.toThrow()
+    rmSync(join(root, 'packages/host/probhub/lib/tools.js'))
+    expect(() => { releaseFamily('probhub').verifyBuildArtifacts(root) }).toThrow(/build artifact missing/)
   })
 
   it('bumps private dsh packages without adding release tags', () => {

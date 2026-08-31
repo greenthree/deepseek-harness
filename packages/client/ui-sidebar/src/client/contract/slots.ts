@@ -10,7 +10,7 @@
 import type { PropsLocale, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls ui-layout's SlotMap merge (the 'sidebar' entry) into every
 // program that sees this contract, so PropsRuntime<'sidebar'> resolves.
-import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type { ProbHubControllerState } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -44,6 +44,16 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * package's 'sidebar' entry; each action receives only the column state.
      */
     'sidebar.footer.action': { kind: 'list'; scope: 'root'; owner: SidebarFooterActionOwnerProps }
+    /**
+     * The lower sidebar seat for the ProbHub problem browser. A registrant registers
+     * one component under this name; the shell passes the current column width
+     * and the read-only ProbHub controller projection, so the component can
+     * render the problem list and health summary without owning sidebar geometry or
+     * workspace discovery. The shipped ui-sidebar component occupies this seat;
+     * a replacement shadows that UI, while no registration leaves the lower
+     * section absent and the rest of the sidebar unchanged.
+     */
+    'sidebar.probhub': { kind: 'single'; scope: 'root'; owner: SidebarProbHubOwnerProps }
   }
 }
 
@@ -85,6 +95,14 @@ export interface SidebarFooterActionOwnerProps {
   wide: boolean
 }
 
+/** Whether the lower ProbHub section is rendered in expanded form. */
+export interface SidebarProbHubOwnerProps {
+  /** Whether the lower section is rendered in expanded form. */
+  wide: boolean
+  /** Layout-owned, read-only controller projection; absent when the host is unavailable. */
+  probHub?: ProbHubControllerState | undefined
+}
+
 /**
  * Registrant-private injected share (arrives via the register inject
  * factory). The shell keeps only its own controls: starting a Session from
@@ -114,5 +132,6 @@ export type SidebarRootComponentProps =
     | 'sidebar.workspaces'
     | 'sidebar.settings'
     | 'sidebar.footer.action'
+    | 'sidebar.probhub'
   >
   & SidebarRootInjected & PropsLocale<'sidebar'>

@@ -857,6 +857,30 @@ export interface Config {
 
 来源：[`packages/host/frontend-static/src/index.ts:28`](../packages/host/frontend-static/src/index.ts)
 
+<a id="deepseek-aidsh-host-probhub"></a>
+
+## `@deepseek-ai/dsh-host-probhub`
+
+需要：`webServer`
+
+```ts config-catalog
+/** Core command configuration for the bridge. */
+export interface Config {
+  /** Node script path for the installed ProbHub Core CLI. */
+  command?: string
+  /** Maximum Core stdout/stderr bytes retained per request. */
+  maxOutputBytes?: number
+  /** Maximum time spent waiting for a read-only Core operation. */
+  timeoutMs?: number
+  /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
+  maxSourceBytes?: number
+  /** Maximum bytes returned by one isolated preview PDF response. */
+  maxPreviewBytes?: number
+}
+```
+
+来源：[`packages/host/probhub/src/index.ts:40`](../packages/host/probhub/src/index.ts)
+
 <a id="deepseek-aidsh-host-webserver"></a>
 
 ## `@deepseek-ai/dsh-host-webserver`
@@ -3277,6 +3301,7 @@ export interface Config {
 - `@deepseek-ai/dsh-host-plugin-inventory` — 需要 `loader`（[`packages/host/plugin-inventory/src/index.ts`](../packages/host/plugin-inventory/src/index.ts)）
 - `@deepseek-ai/dsh-llm`（[`packages/llm/llm/src/index.ts`](../packages/llm/llm/src/index.ts)）
 - `@deepseek-ai/dsh-lsp`（[`packages/lsp/lsp/src/index.ts`](../packages/lsp/lsp/src/index.ts)）
+- `@deepseek-ai/dsh-probhub`（[`packages/bundle/probhub/src/index.ts`](../packages/bundle/probhub/src/index.ts)）
 - `@deepseek-ai/dsh-schedule` — 需要 `agents` · `sessions` · `tools` · `sessionPersistence`（[`packages/schedule/schedule/src/index.ts`](../packages/schedule/schedule/src/index.ts)）
 - `@deepseek-ai/dsh-session`（[`packages/core/session/src/index.ts`](../packages/core/session/src/index.ts)）
 - `@deepseek-ai/dsh-session-checkpoint-policy` — 需要 `llm` · `sessionPersistence` · `sessions` · `tools`（[`packages/session/session-checkpoint-policy/src/index.ts`](../packages/session/session-checkpoint-policy/src/index.ts)）

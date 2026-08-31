@@ -1,4 +1,4 @@
-# Agent Note: Private npm publication as three independent sequences
+# Agent Note: Private npm publication as independent sequences
 
 Status: implemented
 
@@ -6,9 +6,9 @@ English | [中文](2026-08-10-npm-release-sequences.zh.md)
 
 ## Problem
 
-This repository held three unrelated groups of publishable packages and no channel that sent any of them to a registry.
+This repository held four unrelated groups of publishable packages and no channel that sent any of them to a registry.
 
-`packages/*/*` and `apps/*` form the runtime surface of `@deepseek-ai/dsh`; `vendor/*` holds nine rescoped Cordis framework packages, each carrying its upstream version; `native/landlock-run/packages/*` holds Linux platform packages with their own workflow. The three differ in version baseline, change rate, and build requirements: dsh moves with the product, vendor moves only when upstream is re-synced or a local modification changes, and native needs a musl toolchain and one build per architecture. Forcing them through one pipeline means every product release republishes the framework and the native binaries.
+`packages/*/*` and `apps/*` form the runtime surface of `@deepseek-ai/dsh`; the standalone ProbHub integration is `packages/host/probhub` plus `packages/bundle/probhub`; `vendor/*` holds nine rescoped Cordis framework packages, each carrying its upstream version; `native/landlock-run/packages/*` holds Linux platform packages with their own workflow. The four differ in version baseline, change rate, and build requirements: dsh moves with the product, ProbHub moves with the downstream workbench, vendor moves only when upstream is re-synced or a local modification changes, and native needs a musl toolchain and one build per architecture. Forcing them through one pipeline means every product release republishes the framework, integration, and native binaries.
 
 Two hard blockers sat in the way. All 217 workspace manifests set `private: true`, which npm refuses to publish. The subtler one was 933 hand-written `peerDependencies: "^0.0.1"` entries between sibling dsh packages: `pnpm pack` substitutes the `workspace:` protocol but leaves semver ranges alone, and `^0.0.1` means `>=0.0.1 <0.0.2` — it excludes `0.0.2`, and semver excludes prereleases from a range without a prerelease of its own, so it excluded `0.0.1-rc.1` too. Those entries never failed only because the version never left `0.0.1`.
 
@@ -16,23 +16,26 @@ Two hard blockers sat in the way. All 217 workspace manifests set `private: true
 
 ## Decision
 
-### Three independent sequences
+### Independent sequences
 
-`packages/`, `vendor/`, and `native/` each have one bump sequence and one publication, sharing no version, no trigger, and no waiting. Releasing dsh does not republish vendor; releasing vendor does not republish native.
+`packages/`, the standalone ProbHub integration, `vendor/`, and `native/` each have one bump sequence and one publication, sharing no version, no trigger, and no waiting. Releasing dsh does not republish ProbHub or vendor; releasing ProbHub does not republish dsh.
 
 | Sequence | Members | Version baseline | Tag | Workflow |
 |---|---|---|---|---|
 | dsh | Publish set: non-experimental `packages/*/*` + `apps/*`; private experimental packages join only the shared version bump | one version for the publish set, private dsh packages, and workspace root, `0.0.x` | `dsh-v<version>` | `release.yml` (pack) / `release-publish.yml` (publish) |
+| probhub | `packages/host/probhub` and `packages/bundle/probhub` | one independent version for Host and Bundle | `probhub-v<version>` | `release-probhub.yml` (pack) / `release-probhub-publish.yml` (publish) |
 | vendored framework | the nine `vendor/*` packages | each package on its own version line | `vendor-<package>-v<version>` (one per package) | `release-vendor.yml` (pack) / `release-vendor-publish.yml` (publish) |
 | native | `native/landlock-run/packages/*` | its own `0.0.x` | `landlock-run-v<version>` | `landlock-run-release.yml` |
 
-All three publish to the `@deepseek-ai` scope on npmjs.com, and access is per sequence rather than per scope: the vendored framework and the native packages are `public`, the dsh family is `restricted` ([rationale](2026-08-13-public-vendor-and-native-sequences.md)). No publish path passes `--access`, because one flag cannot serve sequences that disagree and would override the manifest that owns the level.
+All four publish to the `@deepseek-ai` scope on npmjs.com, and access is per sequence rather than per scope: the vendored framework, ProbHub integration, and native packages are `public`, the dsh family is `restricted` ([rationale](2026-08-13-public-vendor-and-native-sequences.md)). No publish path passes `--access`, because one flag cannot serve sequences that disagree and would override the manifest that owns the level.
 
 ### Versions land in the repository from a local command; CI only checks and uploads
 
 Each sequence has one bump-and-commit command: it derives the target version, writes it into the relevant manifests, runs `pnpm install --lockfile-only`, and commits the manifests with the lockfile. The published version is therefore readable from the repository. A human creates the tag after the commit merges to master; CI never writes to the repository and needs no write permission.
 
 `release:dsh` accepts `major`, `minor`, `patch`, or an explicit version, and writes one version across the publishable family, every private package under `packages/*/*`, **and the workspace root**. Private packages receive no release tag and remain outside pack and publish; they follow the version because the workspace constraint requires every dsh package's version to equal the root's. The root check accepts a prerelease segment. A prerelease such as `0.0.1-rc.1` drives pack, the installed-artifact probe, and one real private publication before numbered versions follow. The dist-tag decision is the one `landlock-run-release.yml` already made: a version with a prerelease segment publishes under `--tag next`, anything else takes `latest`.
+
+`release:probhub` accepts the same version requests and writes one version only to the Host and Bundle manifests. It never changes the workspace root or official dsh packages. Its `probhub-v<version>` tag is accepted only by the ProbHub publication workflow, which packs and publishes Host before the Bundle dependency.
 
 ### vendor: publish what changed, and let tags be the ledger
 
@@ -70,7 +73,7 @@ Publication runs only from GitHub Actions; there is no local publication path. P
 
 The third state catches code that changed without a version bump. The first two provide idempotence — re-running publish over one artifact republishes nothing and needs no manual selection of packages. The same rule resolves the tension between one vendor release carrying several tags and a workflow that can only run from one ref: the workflow never infers which packages to publish from the tag it ran from.
 
-All three sequences decide this way, including the native one: it publishes through its own script rather than a shell loop, because a loop of bare `npm publish` calls cannot be retried — the registry answers a repeat of an existing version permanently, so one failure partway through left no way forward.
+All four sequences decide this way, including the native one: each publishes through its own script rather than a shell loop, because a loop of bare `npm publish` calls cannot be retried — the registry answers a repeat of an existing version permanently, so one failure partway through left no way forward.
 
 Two registry behaviours shape how a publish is attempted. Writes are spaced by at least two seconds and retried with a backoff, because publishing several packages back to back outruns the registry's own processing and earns `E409 Failed to save packument`. And every retry re-reads the registry first: a reported failure can answer a write that landed anyway, so a version that now exists with this tarball's integrity counts as published rather than as a version to place again.
 
@@ -103,13 +106,13 @@ The entity in this domain is a **release family**: a set of packages sharing one
 | `publish` | the three registry states above |
 | `process` / `tarball` | the one home for spawning commands and for reading a packed tarball, including the entry guard that keeps every script importable |
 
-The dsh family applies the repository's publication payload policy, which rejects sources and declaration maps. The vendored family keeps upstream's payload, because those manifests export `./src/*` and dropping `src` would publish an export map pointing at absent files.
+The dsh and ProbHub families apply the repository's publication payload policy, which rejects sources and declaration maps. The vendored family keeps upstream's payload, because those manifests export `./src/*` and dropping `src` would publish an export map pointing at absent files.
 
 ### Workflow shape: pack on PR/push, publish from a manual dispatch workflow
 
-The `pack` job walks the whole release set once, packing each member into one directory, writes the upload order, and uploads that directory as one artifact; it lives in `release.yml` / `release-vendor.yml`. The release set is one unit — half the packages can never reach the registry while the other half is still building.
+Each `pack` job walks its release set once, packing each member into one directory, writes the upload order, and uploads that directory as one artifact; dsh, ProbHub, and vendor use their respective pack workflows. A release set is one unit — half the packages can never reach the registry while the other half is still building.
 
-`pack` carries no credentials and runs on every pull request and master push, so a pull request proves the release set still packs. Publication lives in a separate `release-publish.yml` / `release-vendor-publish.yml` workflow that is `workflow_dispatch`-only (so it never appears as a PR check): it repacks the current tree and then publishes each entry in order, behind the `npm-publish` environment for human approval. Pack runs are grouped per ref so concurrent pull requests do not displace each other; the `publish` job carries the global `Release-publish` group, because dist-tags are shared registry state.
+`pack` carries no credentials and runs on every pull request and master push, so a pull request proves the release set still packs. Publication lives in separate `workflow_dispatch`-only workflows (`release-publish.yml`, `release-probhub-publish.yml`, and `release-vendor-publish.yml`), so it never appears as a PR check. Each repacks its tagged tree and publishes entries in order behind the `npm-publish` environment for human approval. Pack runs are grouped per ref; publish jobs share the global `Release-publish` group because dist-tags are shared registry state.
 
 A dsh verification installs the vendored family's pack output too. The harness packages declare the vendored framework as a peer, those packages live in another sequence, and the credential-free job cannot fetch them from a private registry — so the dsh `pack` job packs the vendored family for verification while publishing only the dsh set. The publish workflow (`release-publish.yml`) repacks the current tree and publishes only the dsh set.
 

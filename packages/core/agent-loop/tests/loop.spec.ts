@@ -410,6 +410,35 @@ describe('agent loop', () => {
     expect(agent.session.events.filter(event => event.type === 'request/header')).toHaveLength(1)
   })
 
+  it('delivers the selected ProbHub context to the next model request and records it in Session', async () => {
+    const adapter = new MockAdapter([textResponse('ack')])
+    const ctx = await harness(adapter)
+    ctx.systemPrompt.context({
+      name: 'probhub:selected-problem',
+      order: 205,
+      text: 'problem: A01\nrevision: rev-1\nhealth: judgeQa=passed',
+    })
+    const agent = ctx.agentLoop.create(SessionId('a-probhub-context'), { provider: 'mock', model: 'mock' })
+
+    send(agent, 'continue with the selected problem')
+    await waitForIdle(ctx, agent)
+
+    const request = adapter.requests[0]
+    expect(request?.messages.some(message =>
+      message.source.kind === 'plugin'
+      && message.source.plugin === '@deepseek-ai/dsh-system-prompt'
+      && message.content.some(block => block.type === 'text' && block.text.includes('problem: A01')),
+    )).toBe(true)
+    const recorded = agent.session.events.find(event =>
+      event.type === 'user/message'
+      && event.data.source.kind === 'plugin'
+      && event.data.source.plugin === '@deepseek-ai/dsh-system-prompt')
+    expect(recorded?.type === 'user/message' && recorded.data.content).toEqual([{
+      type: 'text',
+      text: 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nproblem: A01\nrevision: rev-1\nhealth: judgeQa=passed',
+    }])
+  })
+
   it('re-emits unchanged runtime context when a surface replacement removed the retained snapshot', async () => {
     const adapter = new MockAdapter([textResponse('one'), textResponse('two')])
     const ctx = await harness(adapter)

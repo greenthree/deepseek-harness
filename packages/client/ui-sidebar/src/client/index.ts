@@ -4,11 +4,13 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { SidebarRootInjected } from './contract/slots.ts'
 import { SidebarRoot } from './SidebarRoot.tsx'
+import { ProbHubSection } from './ProbHubSection.tsx'
 import { en, zh, type SidebarKey } from './locales.ts'
 
 export type {
   SidebarBrandMarkOwnerProps, SidebarBrandNameOwnerProps, SidebarFooterActionOwnerProps,
   SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps, SidebarSettingsOwnerProps,
+  SidebarProbHubOwnerProps,
 } from './contract/slots.ts'
 export type { SidebarKey } from './locales.ts'
 
@@ -50,9 +52,11 @@ export function apply(ctx: ClientContext): void {
         'sidebar.workspaces': { kind: 'single', scope: 'root' },
         'sidebar.settings': { kind: 'single', scope: 'root' },
         'sidebar.footer.action': { kind: 'list', scope: 'root' },
+        'sidebar.probhub': { kind: 'single', scope: 'root' },
       },
       inject: injectProps,
     }, SidebarRoot),
     'ui-sidebar: slot registration',
   )
+  ctx.effect(() => ctx.slots.register({ name: 'sidebar.probhub' }, ProbHubSection), 'ui-sidebar: ProbHub section')
 }
