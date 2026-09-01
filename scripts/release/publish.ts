@@ -18,6 +18,7 @@ import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { parseArgs } from 'node:util'
 import { releaseFamily } from './families.ts'
+import { npmInvocation } from '../npm-invocation.ts'
 import { attempt, attemptEchoed, isEntry } from './process.ts'
 import { packedIdentity, readPublishOrder } from './tarball.ts'
 
@@ -71,7 +72,8 @@ function integrityOf(tarball: string): string {
  * @returns The registry state for that version.
  */
 function registryState(name: string, version: string): RegistryState {
-  const result = attempt('npm', ['view', `${name}@${version}`, 'dist.integrity', '--json'])
+  const npm = npmInvocation(['view', `${name}@${version}`, 'dist.integrity', '--json'])
+  const result = attempt(npm.command, npm.args)
   if (result.status !== 0) {
     const output = `${result.stdout}${result.stderr}`
     if (output.includes('E404') || output.includes('404 Not Found')) return { kind: 'absent' }
@@ -102,7 +104,8 @@ async function publishTarball(tarball: string, name: string, version: string): P
     // command-line flag could not serve both and would override the manifest
     // that does. Each packed manifest decides, and
     // check-workspace-constraints holds every manifest to its sequence's level.
-    const result = attemptEchoed('npm', ['publish', tarball, ...tagArgs])
+    const npm = npmInvocation(['publish', tarball, ...tagArgs])
+    const result = attemptEchoed(npm.command, npm.args)
     const output = `${result.stdout}${result.stderr}`
     if (result.status === 0) return
 

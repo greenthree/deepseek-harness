@@ -18,10 +18,11 @@
 
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { releaseFamily } from './families.ts'
+import { npmInvocation } from '../npm-invocation.ts'
 import { capture, isEntry } from './process.ts'
 import { packedIdentity } from './tarball.ts'
 
@@ -105,9 +106,7 @@ function main(): void {
     // here. Their entry package is a plain dependency of dsh-sandbox-local, so
     // its tarball is supplied through --from.
     const installArgs = ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional']
-    const npm = process.platform === 'win32'
-      ? { command: process.execPath, args: [resolve(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), ...installArgs] }
-      : { command: 'npm', args: installArgs }
+    const npm = npmInvocation(installArgs)
     capture(npm.command, npm.args, { cwd: consumerRoot, env: environment })
 
     const bin = join(consumerRoot, 'node_modules', ...entry.packageName.split('/'), entry.binPath)
