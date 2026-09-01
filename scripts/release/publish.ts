@@ -47,6 +47,18 @@ type RegistryState =
   | { readonly kind: 'absent' }
   | { readonly kind: 'present'; readonly integrity: string }
 
+/** Normalize npm's JSON projection of one selected `dist.integrity` value.
+ * @param value - Parsed output from `npm view ... dist.integrity --json`.
+ * @returns The integrity string, or undefined for an absent/ambiguous value.
+ */
+export function parseRegistryIntegrity(value: unknown): string | undefined {
+  if (typeof value === 'string' && value !== '') return value
+  if (Array.isArray(value) && value.length === 1 && typeof value[0] === 'string' && value[0] !== '') {
+    return value[0]
+  }
+  return undefined
+}
+
 /**
  * Whether a failed publish is worth another attempt.
  * @param output - combined npm output.
@@ -80,10 +92,11 @@ function registryState(name: string, version: string): RegistryState {
     throw new Error(`npm view ${name}@${version} failed:\n${output}`)
   }
   const parsed: unknown = JSON.parse(result.stdout)
-  if (typeof parsed !== 'string' || parsed === '') {
+  const integrity = parseRegistryIntegrity(parsed)
+  if (integrity === undefined) {
     throw new Error(`registry reported no dist.integrity for ${name}@${version}`)
   }
-  return { kind: 'present', integrity: parsed }
+  return { kind: 'present', integrity }
 }
 
 /**
