@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-所有发布和打包安装验证中的 npm 调用统一使用 `npmInvocation` helper。POSIX 主机直接调用 `npm`；Windows 则通过 `process.execPath` 执行与当前 Node 可执行文件同目录下的 npm CLI。registry 查询、发布尝试和打包安装依赖因此共享同一套无 shell 解析。
+所有发布和打包安装验证中的 npm 调用统一使用 `npmInvocation` helper。POSIX 主机直接调用 `npm`；Windows 则通过 `process.execPath` 执行与当前 Node 可执行文件同目录下的 npm CLI。registry 查询、发布尝试和打包安装依赖因此共享同一套无 shell 解析。registry integrity 解析同时接受 npm 的字符串形式和单元素 JSON 数组形式，并拒绝缺失或含糊的值。
 
 ## 备选方案
 
@@ -22,4 +22,4 @@ Status: implemented
 
 ## 影响
 
-当 npm 随标准 Node 一起安装时，Windows 发布不再因 `spawnSync npm ENOENT` 失败。helper 假定标准 Node 目录中存在 `node_modules/npm/bin/npm-cli.js`；非标准 Node 安装会在 npm 调用处报告具体 CLI 错误，而不是被误判成找不到 `npm` 可执行文件。单元测试覆盖 POSIX 与 Windows 两个分支。
+当 npm 随标准 Node 一起安装时，Windows 发布不再因 `spawnSync npm ENOENT` 失败。helper 假定标准 Node 目录中存在 `node_modules/npm/bin/npm-cli.js`；非标准 Node 安装会在 npm 调用处报告具体 CLI 错误，而不是被误判成找不到 `npm` 可执行文件。对于把选定 integrity 投影为字符串或单元素数组的 npm 版本，重复发布都能正常运行。单元测试覆盖 POSIX、Windows 分支和 integrity 解析。

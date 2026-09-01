@@ -10,7 +10,7 @@ Release scripts spawn npm without a shell. Windows package-manager shims are exp
 
 ## Decision
 
-All release and packed-install npm calls use one `npmInvocation` helper. POSIX hosts invoke `npm` directly; Windows invokes the npm CLI bundled beside the running Node executable through `process.execPath`. Registry queries, publication attempts, and packed-install dependency installation therefore use the same shell-free resolution.
+All release and packed-install npm calls use one `npmInvocation` helper. POSIX hosts invoke `npm` directly; Windows invokes the npm CLI bundled beside the running Node executable through `process.execPath`. Registry queries, publication attempts, and packed-install dependency installation therefore use the same shell-free resolution. Registry integrity parsing accepts npm's string form and its single-element JSON array form, while rejecting missing or ambiguous values.
 
 ## Alternatives considered
 
@@ -22,4 +22,4 @@ All release and packed-install npm calls use one `npmInvocation` helper. POSIX h
 
 ## Consequences
 
-Windows release publication no longer fails with `spawnSync npm ENOENT` when npm is installed with Node. The helper assumes the standard Node distribution layout containing `node_modules/npm/bin/npm-cli.js`; a nonstandard Node installation fails at the npm invocation with its concrete CLI error instead of being mistaken for a missing executable name. The invocation descriptor is unit-tested for POSIX and Windows branches.
+Windows release publication no longer fails with `spawnSync npm ENOENT` when npm is installed with Node. The helper assumes the standard Node distribution layout containing `node_modules/npm/bin/npm-cli.js`; a nonstandard Node installation fails at the npm invocation with its concrete CLI error instead of being mistaken for a missing executable name. Re-running a publication works with npm versions that project a selected integrity as either a string or a one-element array. The invocation descriptor and integrity parser are unit-tested.
