@@ -43,7 +43,7 @@ jobs:
         run: pnpm run build:lib:host
 
       - name: Build ProbHub Bundle
-        run: pnpm --filter @deepseek-ai/dsh-probhub run bundle
+        run: pnpm --filter @greenthree/dsh-probhub run bundle
 
       - name: Pack ProbHub release tarballs
         run: pnpm run release:pack --family probhub --out dist/npm-probhub

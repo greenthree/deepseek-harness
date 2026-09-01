@@ -1275,7 +1275,7 @@ importers:
 
   packages/bundle/probhub:
     dependencies:
-      '@deepseek-ai/dsh-host-probhub':
+      '@greenthree/dsh-host-probhub':
         specifier: workspace:^
         version: link:../../host/probhub
     devDependencies:
@@ -8890,9 +8890,6 @@ importers:
       '@deepseek-ai/dsh-host-plugin-inventory':
         specifier: workspace:^
         version: link:../../packages/host/plugin-inventory
-      '@deepseek-ai/dsh-host-probhub':
-        specifier: workspace:^
-        version: link:../../packages/host/probhub
       '@deepseek-ai/dsh-host-webserver':
         specifier: workspace:^
         version: link:../../packages/host/webserver
@@ -9145,6 +9142,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
+      '@greenthree/dsh-host-probhub':
+        specifier: workspace:^
+        version: link:../../packages/host/probhub
 
   vendor/cordis:
     dependencies:

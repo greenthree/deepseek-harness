@@ -17,8 +17,8 @@ describe('dsh-probhub bundle', () => {
     const rows = (parsed as { insert?: { id?: string; name?: string; inject?: string[] }[] }[])
       .flatMap(patch => patch.insert ?? [])
     expect(rows).toEqual([
-      { id: 'probhub', name: '@deepseek-ai/dsh-host-probhub', inject: ['webServer'] },
-      { id: 'probhub-tools', name: '@deepseek-ai/dsh-host-probhub/tools' },
+      { id: 'probhub', name: '@greenthree/dsh-host-probhub', inject: ['webServer'] },
+      { id: 'probhub-tools', name: '@greenthree/dsh-host-probhub/tools' },
     ])
   })
 })

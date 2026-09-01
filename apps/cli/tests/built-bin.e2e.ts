@@ -750,7 +750,7 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       const profileDir = join(home, 'profiles', 'web')
       const profilePnpm = join(profileDir, 'pnpm-workspace.yaml')
       const overridePath = hostTarball.replaceAll('\\', '/')
-      writeFileSync(profilePnpm, `${readFileSync(profilePnpm, 'utf8')}overrides:\n  '@deepseek-ai/dsh-host-probhub': 'file:${overridePath}'\n`)
+      writeFileSync(profilePnpm, `${readFileSync(profilePnpm, 'utf8')}overrides:\n  '@greenthree/dsh-host-probhub': 'file:${overridePath}'\n`)
 
       const bundleAdd = await runBuiltBin(
         ['plugin', '--profile', 'web', 'add', bundleTarball],
@@ -762,18 +762,18 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         dependencies?: Record<string, string>
         dsh?: { profile?: { bundles?: string[] } }
       }
-      expect(Object.keys(installed.dependencies ?? {})).toEqual(['@deepseek-ai/dsh-probhub'])
-      expect(installed.dsh?.profile?.bundles).toContain('@deepseek-ai/dsh-probhub')
-      expect(existsSync(join(profileDir, 'node_modules/@deepseek-ai/dsh-host-probhub/package.json'))).toBe(true)
+      expect(Object.keys(installed.dependencies ?? {})).toEqual(['@greenthree/dsh-probhub'])
+      expect(installed.dsh?.profile?.bundles).toContain('@greenthree/dsh-probhub')
+      expect(existsSync(join(profileDir, 'node_modules/@greenthree/dsh-host-probhub/package.json'))).toBe(true)
 
       const dump = await runBuiltBin(
         ['--profile', 'web', '--dump-config'],
         { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
       )
       expect(dump.code, dump.stderr).toBe(0)
-      expect(dump.stdout).toContain('# == @deepseek-ai/dsh-probhub')
-      expect(dump.stdout).toContain("name: '@deepseek-ai/dsh-host-probhub'")
-      expect(dump.stdout).toContain("name: '@deepseek-ai/dsh-host-probhub/tools'")
+      expect(dump.stdout).toContain('# == @greenthree/dsh-probhub')
+      expect(dump.stdout).toContain("name: '@greenthree/dsh-host-probhub'")
+      expect(dump.stdout).toContain("name: '@greenthree/dsh-host-probhub/tools'")
 
       const child = execa(process.execPath, [dshBin, '--profile', 'web', '--no-open', '--port', '0'], {
         cwd: repoRoot,
@@ -815,7 +815,7 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       }
 
       const bundleRemove = await runBuiltBin(
-        ['plugin', '--profile', 'web', 'remove', '@deepseek-ai/dsh-probhub'],
+        ['plugin', '--profile', 'web', 'remove', '@greenthree/dsh-probhub'],
         { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
       )
       expect(bundleRemove.code, bundleRemove.stderr).toBe(0)
@@ -824,8 +824,8 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
         dsh?: { profile?: { bundles?: string[] } }
       }
       expect(afterBundleRemove.dependencies ?? {}).toEqual({})
-      expect(afterBundleRemove.dsh?.profile?.bundles).not.toContain('@deepseek-ai/dsh-probhub')
-      expect(existsSync(join(profileDir, 'node_modules/@deepseek-ai/dsh-host-probhub/package.json'))).toBe(false)
+      expect(afterBundleRemove.dsh?.profile?.bundles).not.toContain('@greenthree/dsh-probhub')
+      expect(existsSync(join(profileDir, 'node_modules/@greenthree/dsh-host-probhub/package.json'))).toBe(false)
     } finally {
       rmSync(home, { recursive: true, force: true })
       rmSync(packDir, { recursive: true, force: true })

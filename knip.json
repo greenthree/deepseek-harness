@@ -114,7 +114,7 @@
     },
     "packages/bundle/probhub": {
       "ignoreDependencies": [
-        "@deepseek-ai/dsh-host-probhub"
+        "@greenthree/dsh-host-probhub"
       ]
     },
     "packages/api/remotes": {

@@ -117,6 +117,9 @@ export abstract class ReleaseFamily {
   /** Git tag prefix this family publishes from. */
   abstract readonly tagPrefix: string
 
+  /** npm scopes this release family is allowed to publish from. */
+  protected readonly allowedPackageScopes: readonly string[] = ['@deepseek-ai/']
+
   /**
    * Assert that built artifacts match this release family's required profile.
    * Families without environment-selected artifacts accept every build tree.
@@ -141,7 +144,9 @@ export abstract class ReleaseFamily {
       const name = requireString(manifest, 'name', normalized)
       const version = requireString(manifest, 'version', normalized)
       if (name === WORKSPACE_ROOT_PACKAGE) throw new Error(`${normalized} selected the workspace root`)
-      if (!name.startsWith('@deepseek-ai/')) throw new Error(`${normalized} must name an @deepseek-ai package`)
+      if (!this.allowedPackageScopes.some(scope => name.startsWith(scope))) {
+        throw new Error(`${normalized} must name a package in one of the allowed scopes: ${this.allowedPackageScopes.join(', ')}`)
+      }
       if (seen.has(name)) throw new Error(`${name} appears twice in release family ${this.id}`)
       seen.add(name)
       members.push({
@@ -323,6 +328,7 @@ class DshFamily extends ReleaseFamily {
   readonly id = 'dsh'
   readonly patterns = ['packages/!(experimental)/*/package.json', 'apps/*/package.json'] as const
   readonly tagPrefix = 'dsh-v'
+  protected override readonly allowedPackageScopes = ['@deepseek-ai/', '@greenthree/'] as const
 
   /** Keep the optional downstream integration out of the official dsh sequence. */
   override members(root: string): ReleaseMember[] {
@@ -374,12 +380,13 @@ class ProbhubFamily extends ReleaseFamily {
     'packages/bundle/probhub/package.json',
   ] as const
   readonly tagPrefix = 'probhub-v'
+  protected override readonly allowedPackageScopes = ['@greenthree/'] as const
 
   /** Refuse to pack a checkout that has not produced the Host and Bundle entries. */
   override verifyBuildArtifacts(root: string): void {
     for (const member of this.members(root)) {
       const required = ['lib/index.js', 'lib/invariant.js', 'lib/types/index.d.ts', 'lib/types/invariant.d.ts']
-      if (member.name === '@deepseek-ai/dsh-host-probhub') {
+      if (member.name === '@greenthree/dsh-host-probhub') {
         required.push('lib/tools.js', 'lib/types/tools.d.ts')
       }
       for (const file of required) {

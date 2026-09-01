@@ -505,7 +505,7 @@ describe('npm release workflows', () => {
       .filter((run): run is string => typeof run === 'string')
     expect(packCommands).toContain('pnpm run release:verify --family probhub')
     expect(packCommands).toContain('pnpm run release:pack --family probhub --out dist/npm-probhub')
-    expect(packCommands).toContain('pnpm --filter @deepseek-ai/dsh-probhub run bundle')
+    expect(packCommands).toContain('pnpm --filter @greenthree/dsh-probhub run bundle')
     expect(publishJob.environment).toBe('npm-publish')
     expect(publishJob.concurrency).toMatchObject({ group: 'Release-publish' })
     const publishCommands = publishJob.steps

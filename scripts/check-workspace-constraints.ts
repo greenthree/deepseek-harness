@@ -49,6 +49,7 @@ const repositoryUrl = 'git+https://github.com/deepseek-harness/deepseek-harness.
  * their trusted publishing against the repository that runs the workflow.
  */
 const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harness.git'
+const probhubRepositoryUrl = 'git+https://github.com/greenthree/deepseek-harness.git'
 /** Private packages that participate in workspace checks but not releases. */
 const experimentalPackageDirectory = /^packages\/experimental\/[^/]+$/
 /** npm namespace reserved for private experimental packages. */
@@ -143,7 +144,7 @@ function workspaceManifests(): WorkspaceManifest[] {
 const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
   // The optional model-facing validation consumer is exposed as a published
   // subpath and bundled beside the host bridge entry.
-  '@deepseek-ai/dsh-host-probhub': ['lib/tools.js'],
+  '@greenthree/dsh-host-probhub': ['lib/tools.js'],
   // Statically linked client libraries keep their stylesheets next to the emitted
   // JavaScript, which imports them by relative path: the compile shell runs
   // them through its own CSS pipeline, so the sheets are published artifacts.
@@ -295,10 +296,13 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
     if (manifest.publishConfig?.access !== 'public') {
       errors.push(`${label}: release member must set publishConfig.access to "public"`)
     }
+    const expectedRepositoryUrl = manifest.name !== undefined && PROBHUB_PACKAGE_NAMES.has(manifest.name)
+      ? probhubRepositoryUrl
+      : publishedRepositoryUrl
     if (manifest.repository?.type !== 'git'
-      || manifest.repository.url !== publishedRepositoryUrl
+      || manifest.repository.url !== expectedRepositoryUrl
       || manifest.repository.directory !== dir) {
-      errors.push(`${label}: release member repository must use ${publishedRepositoryUrl} with directory ${dir}`)
+      errors.push(`${label}: release member repository must use ${expectedRepositoryUrl} with directory ${dir}`)
     }
   } else if (!experimentalPackageDirectory.test(dir) && manifest.private !== true) {
     errors.push(`${label}: package.json must set "private": true`)
@@ -308,7 +312,7 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
     return errors
   }
 
-  if (manifest.name?.startsWith('@deepseek-ai/')) {
+  if (manifest.name?.startsWith('@deepseek-ai/') || (manifest.name !== undefined && PROBHUB_PACKAGE_NAMES.has(manifest.name))) {
     const allowedSources = publicationSourceAllowlist[manifest.name] ?? []
     for (const file of manifest.files ?? []) {
       if (isForbiddenPublicationFile(file) && !allowedSources.includes(file)) {
@@ -335,8 +339,10 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
     }
   }
 
-  if (dir.startsWith('packages/') && manifest.name?.startsWith('@deepseek-ai/dsh-')) {
-    const isProbhubPackage = PROBHUB_PACKAGE_NAMES.has(manifest.name)
+  const isDshPackage = manifest.name?.startsWith('@deepseek-ai/dsh-')
+    || (manifest.name !== undefined && PROBHUB_PACKAGE_NAMES.has(manifest.name))
+  if (dir.startsWith('packages/') && isDshPackage) {
+    const isProbhubPackage = manifest.name !== undefined && PROBHUB_PACKAGE_NAMES.has(manifest.name)
     const peer = manifest.peerDependencies?.['@deepseek-ai/cordis']
     const dev = manifest.devDependencies?.['@deepseek-ai/cordis']
 

@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@deepseek-ai/dsh-host-probhub'
+const PACKAGE_NAME = '@greenthree/dsh-host-probhub'
 
 /** Cordis companion plugin name. */
 export const name = 'host-probhub-invariant'

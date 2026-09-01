@@ -1,12 +1,12 @@
 /**
  * Package-owned invariant companion for the ProbHub integration bundle.
- * @module @deepseek-ai/dsh-probhub/invariant
+ * @module @greenthree/dsh-probhub/invariant
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@deepseek-ai/dsh-probhub'
+const PACKAGE_NAME = '@greenthree/dsh-probhub'
 
 /** Cordis companion plugin name. */
 export const name = 'probhub-bundle-invariant'

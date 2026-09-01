@@ -857,30 +857,6 @@ export interface Config {
 
 来源：[`packages/host/frontend-static/src/index.ts:28`](../packages/host/frontend-static/src/index.ts)
 
-<a id="deepseek-aidsh-host-probhub"></a>
-
-## `@deepseek-ai/dsh-host-probhub`
-
-需要：`webServer`
-
-```ts config-catalog
-/** Core command configuration for the bridge. */
-export interface Config {
-  /** Node script path for the installed ProbHub Core CLI. */
-  command?: string
-  /** Maximum Core stdout/stderr bytes retained per request. */
-  maxOutputBytes?: number
-  /** Maximum time spent waiting for a read-only Core operation. */
-  timeoutMs?: number
-  /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
-  maxSourceBytes?: number
-  /** Maximum bytes returned by one isolated preview PDF response. */
-  maxPreviewBytes?: number
-}
-```
-
-来源：[`packages/host/probhub/src/index.ts:40`](../packages/host/probhub/src/index.ts)
-
 <a id="deepseek-aidsh-host-webserver"></a>
 
 ## `@deepseek-ai/dsh-host-webserver`
@@ -3244,6 +3220,30 @@ export interface Config {
 
 来源：[`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="greenthreedsh-host-probhub"></a>
+
+## `@greenthree/dsh-host-probhub`
+
+需要：`webServer`
+
+```ts config-catalog
+/** Core command configuration for the bridge. */
+export interface Config {
+  /** Node script path for the installed ProbHub Core CLI. */
+  command?: string
+  /** Maximum Core stdout/stderr bytes retained per request. */
+  maxOutputBytes?: number
+  /** Maximum time spent waiting for a read-only Core operation. */
+  timeoutMs?: number
+  /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
+  maxSourceBytes?: number
+  /** Maximum bytes returned by one isolated preview PDF response. */
+  maxPreviewBytes?: number
+}
+```
+
+来源：[`packages/host/probhub/src/index.ts:40`](../packages/host/probhub/src/index.ts)
+
 ## 无配置的可加载插件
 
 这些插件通过 `cordis.yml` 中不含 `config:` 块的条目加载；它们未声明任何配置接口。
@@ -3301,7 +3301,6 @@ export interface Config {
 - `@deepseek-ai/dsh-host-plugin-inventory` — 需要 `loader`（[`packages/host/plugin-inventory/src/index.ts`](../packages/host/plugin-inventory/src/index.ts)）
 - `@deepseek-ai/dsh-llm`（[`packages/llm/llm/src/index.ts`](../packages/llm/llm/src/index.ts)）
 - `@deepseek-ai/dsh-lsp`（[`packages/lsp/lsp/src/index.ts`](../packages/lsp/lsp/src/index.ts)）
-- `@deepseek-ai/dsh-probhub`（[`packages/bundle/probhub/src/index.ts`](../packages/bundle/probhub/src/index.ts)）
 - `@deepseek-ai/dsh-schedule` — 需要 `agents` · `sessions` · `tools` · `sessionPersistence`（[`packages/schedule/schedule/src/index.ts`](../packages/schedule/schedule/src/index.ts)）
 - `@deepseek-ai/dsh-session`（[`packages/core/session/src/index.ts`](../packages/core/session/src/index.ts)）
 - `@deepseek-ai/dsh-session-checkpoint-policy` — 需要 `llm` · `sessionPersistence` · `sessions` · `tools`（[`packages/session/session-checkpoint-policy/src/index.ts`](../packages/session/session-checkpoint-policy/src/index.ts)）
@@ -3319,6 +3318,7 @@ export interface Config {
 - `@deepseek-ai/dsh-tool-subagent-control` — 需要 `tools` · `subagents`（[`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)）
 - `@deepseek-ai/dsh-user-questions`（[`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts)）
 - `@deepseek-ai/dsh-workspace` — 需要 `storageDomain` · `sessionPersistence`（[`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts)）
+- `@greenthree/dsh-probhub`（[`packages/bundle/probhub/src/index.ts`](../packages/bundle/probhub/src/index.ts)）
 
 ## Seam 包（不可直接加载）
 

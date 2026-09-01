@@ -4,7 +4,7 @@
 
 - insert:
     - id: probhub
-      name: '@deepseek-ai/dsh-host-probhub'
+      name: '@greenthree/dsh-host-probhub'
       inject: [webServer]
     - id: probhub-tools
-      name: '@deepseek-ai/dsh-host-probhub/tools'
+      name: '@greenthree/dsh-host-probhub/tools'

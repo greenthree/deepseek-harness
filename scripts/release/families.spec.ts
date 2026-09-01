@@ -53,11 +53,11 @@ describe('release families', () => {
     const dsh = releaseFamily('dsh').members(root)
     const probhub = releaseFamily('probhub').members(root)
 
-    expect(dsh.map(member => member.name)).not.toContain('@deepseek-ai/dsh-host-probhub')
-    expect(dsh.map(member => member.name)).not.toContain('@deepseek-ai/dsh-probhub')
+    expect(dsh.map(member => member.name)).not.toContain('@greenthree/dsh-host-probhub')
+    expect(dsh.map(member => member.name)).not.toContain('@greenthree/dsh-probhub')
     expect(probhub.map(member => member.name)).toEqual([
-      '@deepseek-ai/dsh-probhub',
-      '@deepseek-ai/dsh-host-probhub',
+      '@greenthree/dsh-probhub',
+      '@greenthree/dsh-host-probhub',
     ])
     expect(releaseFamily('probhub').tagFor(probhub[0]!)).toBe('probhub-v0.1.1-rc.2')
   })
@@ -65,8 +65,8 @@ describe('release families', () => {
   it('requires the paired ProbHub packages to share one version', () => {
     const probhub = releaseFamily('probhub')
     const members = [
-      member('packages/host/probhub', '@deepseek-ai/dsh-host-probhub'),
-      { ...member('packages/bundle/probhub', '@deepseek-ai/dsh-probhub'), version: '0.0.2' },
+      member('packages/host/probhub', '@greenthree/dsh-host-probhub'),
+      { ...member('packages/bundle/probhub', '@greenthree/dsh-probhub'), version: '0.0.2' },
     ]
 
     expect(() => { probhub.verifyVersions(members) }).toThrow(/must share one version/)
@@ -77,8 +77,8 @@ describe('release families', () => {
   it('plans a standalone ProbHub bump without the dsh root or private packages', () => {
     const family = releaseFamily('probhub')
     const members = [
-      member('packages/bundle/probhub', '@deepseek-ai/dsh-probhub'),
-      member('packages/host/probhub', '@deepseek-ai/dsh-host-probhub'),
+      member('packages/bundle/probhub', '@greenthree/dsh-probhub'),
+      member('packages/host/probhub', '@greenthree/dsh-host-probhub'),
     ]
     const plan = planIndependentShared(family, members, 'patch')
 
@@ -93,7 +93,7 @@ describe('release families', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-probhub-artifacts-'))
     roots.push(root)
     for (const directory of ['packages/host/probhub', 'packages/bundle/probhub']) {
-      const name = directory.includes('/host/') ? '@deepseek-ai/dsh-host-probhub' : '@deepseek-ai/dsh-probhub'
+      const name = directory.includes('/host/') ? '@greenthree/dsh-host-probhub' : '@greenthree/dsh-probhub'
       write(join(root, directory, 'package.json'), JSON.stringify({ name, version: '1.0.0' }))
       for (const file of ['lib/index.js', 'lib/invariant.js', 'lib/types/index.d.ts', 'lib/types/invariant.d.ts']) {
         write(join(root, directory, file), '')

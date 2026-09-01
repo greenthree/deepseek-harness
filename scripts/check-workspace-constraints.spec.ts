@@ -79,11 +79,11 @@ describe('experimental workspace constraints', () => {
 describe('standalone ProbHub release constraints', () => {
   const host: WorkspaceManifest = {
     dir: 'packages/host/probhub',
-    manifest: { name: '@deepseek-ai/dsh-host-probhub', version: '1.2.3' },
+    manifest: { name: '@greenthree/dsh-host-probhub', version: '1.2.3' },
   }
   const bundle: WorkspaceManifest = {
     dir: 'packages/bundle/probhub',
-    manifest: { name: '@deepseek-ai/dsh-probhub', version: '1.2.3' },
+    manifest: { name: '@greenthree/dsh-probhub', version: '1.2.3' },
   }
 
   it('accepts the paired independent version line', () => {
@@ -102,7 +102,7 @@ describe('standalone ProbHub release constraints', () => {
       'probhub release members must share one version: packages/host/probhub: 1.2.3, packages/bundle/probhub: latest',
     ])
     expect(checkProbhubVersions([{ ...host, dir: 'packages/other/probhub' }, bundle])).toEqual([
-      '@deepseek-ai/dsh-host-probhub: probhub release member must live at packages/host/probhub, got packages/other/probhub',
+      '@greenthree/dsh-host-probhub: probhub release member must live at packages/host/probhub, got packages/other/probhub',
     ])
   })
 })

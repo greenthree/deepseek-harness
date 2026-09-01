@@ -19,6 +19,7 @@ import { createInterface } from 'node:readline/promises'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { validateTarballPayload } from './publication-payload.ts'
+import { PROBHUB_PACKAGE_NAMES } from './release/probhub.ts'
 
 const DEFAULT_REGISTRY = 'https://registry.npm.harnessment.com'
 const DEFAULT_OUTPUT_DIRECTORY = '.artifacts/npm-baseline'
@@ -242,7 +243,10 @@ class WorkspacePackageSet {
   ) {}
 
   static discover(root: string): WorkspacePackageSet {
-    const manifestPaths = globSync(PACKAGE_PATTERNS, { cwd: root }).sort()
+    const manifestPaths = globSync(PACKAGE_PATTERNS, { cwd: root }).sort().filter((path) => {
+      const manifest = readObject(resolve(root, path))
+      return typeof manifest.name !== 'string' || !PROBHUB_PACKAGE_NAMES.has(manifest.name)
+    })
     if (manifestPaths.length === 0) {
       throw new Error('no package manifests found under vendor/, packages/, or apps/')
     }
