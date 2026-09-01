@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -307,6 +307,28 @@ function startStartupProfile(fixture: StartupFixture, args: readonly string[]) {
       RAW_INTERRUPT_FILE: fixture.interrupt,
     },
   })
+}
+
+/** Pack one workspace package into a throwaway directory for profile-install e2e. */
+async function packWorkspacePackage(directory: string, destination: string): Promise<string> {
+  const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+  const result = await execa(command, ['--dir', directory, 'pack', '--pack-destination', destination], {
+    cwd: repoRoot,
+    timeout: 120_000,
+    reject: false,
+  })
+  expect(result.exitCode, `${command} pack failed for ${directory}:\n${result.stdout}\n${result.stderr}`).toBe(0)
+  const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as {
+    name?: unknown
+    version?: unknown
+  }
+  if (typeof manifest.name !== 'string' || typeof manifest.version !== 'string') {
+    throw new Error(`package manifest is missing name/version: ${directory}`)
+  }
+  const filename = `${manifest.name.replace(/^@/u, '').replace('/', '-')}-${manifest.version}.tgz`
+  const [tarball] = globSync(filename, { cwd: destination })
+  if (tarball === undefined) throw new Error(`pnpm pack produced no tarball for ${directory}`)
+  return join(destination, tarball)
 }
 
 describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', () => {
@@ -707,6 +729,108 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       rmSync(home, { recursive: true, force: true })
     }
   }, 30_000)
+
+  it('installs the packed ProbHub Bundle, composes it, and removes it cleanly', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-probhub-packed-profile-'))
+    const packDir = mkdtempSync(join(tmpdir(), 'dsh-probhub-packed-tarballs-'))
+    const hostDir = join(repoRoot, 'packages/host/probhub')
+    const bundleDir = join(repoRoot, 'packages/bundle/probhub')
+    try {
+      const hostTarball = await packWorkspacePackage(hostDir, packDir)
+      const bundleTarball = await packWorkspacePackage(bundleDir, packDir)
+      const init = await runBuiltBin(
+        ['--profile', 'web', '--dump-default-config'],
+        { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+      )
+      expect(init.code, init.stderr).toBe(0)
+
+      // The Host package is not published during this repository's local e2e.
+      // A profile-local override supplies the exact packed bytes while leaving
+      // the production Bundle manifest's semver dependency unchanged.
+      const profileDir = join(home, 'profiles', 'web')
+      const profilePnpm = join(profileDir, 'pnpm-workspace.yaml')
+      const overridePath = hostTarball.replaceAll('\\', '/')
+      writeFileSync(profilePnpm, `${readFileSync(profilePnpm, 'utf8')}overrides:\n  '@greenthree/dsh-host-probhub': 'file:${overridePath}'\n`)
+
+      const bundleAdd = await runBuiltBin(
+        ['plugin', '--profile', 'web', 'add', bundleTarball],
+        { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+      )
+      expect(bundleAdd.code, bundleAdd.stderr).toBe(0)
+      const manifestPath = join(profileDir, 'package.json')
+      const installed = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        dependencies?: Record<string, string>
+        dsh?: { profile?: { bundles?: string[] } }
+      }
+      expect(Object.keys(installed.dependencies ?? {})).toEqual(['@greenthree/dsh-probhub'])
+      expect(installed.dsh?.profile?.bundles).toContain('@greenthree/dsh-probhub')
+      expect(existsSync(join(profileDir, 'node_modules/@greenthree/dsh-host-probhub/package.json'))).toBe(true)
+
+      const dump = await runBuiltBin(
+        ['--profile', 'web', '--dump-config'],
+        { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+      )
+      expect(dump.code, dump.stderr).toBe(0)
+      expect(dump.stdout).toContain('# == @greenthree/dsh-probhub')
+      expect(dump.stdout).toContain("name: '@greenthree/dsh-host-probhub'")
+      expect(dump.stdout).toContain("name: '@greenthree/dsh-host-probhub/tools'")
+
+      const child = execa(process.execPath, [dshBin, '--profile', 'web', '--no-open', '--port', '0'], {
+        cwd: repoRoot,
+        env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+        extendEnv: false,
+        reject: false,
+      })
+      let output = ''
+      let settled = false
+      try {
+        const port = await new Promise<number>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (settled) return
+            settled = true
+            reject(new Error(`packed ProbHub Web profile did not announce readiness:\n${output}`))
+          }, 30_000)
+          child.stdout?.setEncoding('utf8')
+          child.stdout?.on('data', (chunk: string) => {
+            output += chunk
+            const match = /dsh web: http:\/\/127\.0\.0\.1:(\d+)/u.exec(output)
+            if (match?.[1] === undefined || settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve(Number(match[1]))
+          })
+          void child.then((result) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            reject(new Error(`packed ProbHub Web profile exited before readiness (code ${String(result.exitCode)}):\n${output}\n${result.stderr}`))
+          })
+        })
+        const health = await fetch(`http://127.0.0.1:${String(port)}/probhub/api/health`)
+        expect(health.status).toBe(200)
+        expect(await health.json()).toMatchObject({ ok: true, state: 'ready' })
+      } finally {
+        child.kill('SIGKILL')
+        await child
+      }
+
+      const bundleRemove = await runBuiltBin(
+        ['plugin', '--profile', 'web', 'remove', '@greenthree/dsh-probhub'],
+        { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+      )
+      expect(bundleRemove.code, bundleRemove.stderr).toBe(0)
+      const afterBundleRemove = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        dependencies?: Record<string, string>
+        dsh?: { profile?: { bundles?: string[] } }
+      }
+      expect(afterBundleRemove.dependencies ?? {}).toEqual({})
+      expect(afterBundleRemove.dsh?.profile?.bundles).not.toContain('@greenthree/dsh-probhub')
+      expect(existsSync(join(profileDir, 'node_modules/@greenthree/dsh-host-probhub/package.json'))).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(packDir, { recursive: true, force: true })
+    }
+  }, 180_000)
 
   describe('config dump', () => {
     let home: string

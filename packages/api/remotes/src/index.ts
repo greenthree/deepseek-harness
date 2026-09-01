@@ -28,7 +28,7 @@ export type {
   ApiRemoteLookupError,
 } from './agent-lookup.ts'
 export { API_REMOTE_FORWARDED_EVENTS } from './remote-events.ts'
-export type { ApiRemoteForwardedEvent } from './types.ts'
+export type { ApiRemoteForwardedEvent, ProbHubTab, ProbHubTabRequestReason } from './types.ts'
 
 // Shape gate over the allowlist, kept in the Host face because the Host's event
 // vocabulary is the authoritative one. It pins three things at compile time:

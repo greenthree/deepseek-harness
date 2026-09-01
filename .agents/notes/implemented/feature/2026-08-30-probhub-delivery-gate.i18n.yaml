@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-30-probhub-delivery-gate.md
+2026-08-30-probhub-delivery-gate.md: 9de3141a229bd87a329b45d669e096daa44503d4
+2026-08-30-probhub-delivery-gate.zh.md: 54ef5dbe5f379ea8b0241e6b730b9897f24d5c5a

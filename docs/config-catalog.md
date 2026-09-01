@@ -3218,6 +3218,30 @@ export interface Config {
 
 Source: [`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="greenthreedsh-host-probhub"></a>
+
+## `@greenthree/dsh-host-probhub`
+
+Requires: `webServer`
+
+```ts config-catalog
+/** Core command configuration for the bridge. */
+export interface Config {
+  /** Node script path for the installed ProbHub Core CLI. */
+  command?: string
+  /** Maximum Core stdout/stderr bytes retained per request. */
+  maxOutputBytes?: number
+  /** Maximum time spent waiting for a read-only Core operation. */
+  timeoutMs?: number
+  /** Maximum UTF-8 bytes exposed by one workbench source read/write. */
+  maxSourceBytes?: number
+  /** Maximum bytes returned by one isolated preview PDF response. */
+  maxPreviewBytes?: number
+}
+```
+
+Source: [`packages/host/probhub/src/index.ts:40`](../packages/host/probhub/src/index.ts)
+
 ## Loadable plugins with no config
 
 These load from a `cordis.yml` entry with no `config:` block; they declare no configuration API.
@@ -3292,6 +3316,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-tool-subagent-control` — requires `tools` · `subagents` ([`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts))
 - `@deepseek-ai/dsh-user-questions` ([`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts))
 - `@deepseek-ai/dsh-workspace` — requires `storageDomain` · `sessionPersistence` ([`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts))
+- `@greenthree/dsh-probhub` ([`packages/bundle/probhub/src/index.ts`](../packages/bundle/probhub/src/index.ts))
 
 ## Seam packages (not directly loadable)
 

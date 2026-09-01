@@ -8,8 +8,11 @@
  * presenter, which projects ctx.theme snapshots onto document.body.
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { PanelActions } from './service.ts'
+import type { ProbHubControllerState } from './probhub-controller.ts'
+import { probHubController } from './probhub-controller.ts'
 import { AppFrame } from './AppFrame.tsx'
 import { createLayoutStore } from './stores.ts'
 import { LayoutController } from './service.ts'
@@ -22,6 +25,9 @@ import { ThemePresenter } from './theme-presenter.ts'
 // against; the frame components and the store factory are package-internal.
 export { LayoutController } from './service.ts'
 export type { ILayout } from './service.ts'
+export type { ProbHubControllerState } from './probhub-controller.ts'
+export type { ProbHubOverview, ProbHubProblem, ProbHubProblemReport, ProbHubReport } from './ProbHubWorkbench.tsx'
+export type { ProbHubDeliveryGate } from './probhub-controller.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -96,6 +102,8 @@ export interface SidebarOwnerProps {
   collapsed: boolean
   /** Rendered column width in px (SIDEBAR_COLLAPSED when collapsed). */
   width: number
+  /** Read-only ProbHub projection owned by the layout frame and passed down to the sidebar slot. */
+  probHub?: ProbHubControllerState | undefined
 }
 
 /** Conversation owner share: business state and actions belong to the registrant. */
@@ -141,6 +149,18 @@ export function apply(ctx: ClientContext): void {
       void disposeService()
     }
   }, 'ui-layout: service + root registration')
+
+  // Host suggestions/tool results use the existing one-way remote-event
+  // carrier. Keep this consumer local and idempotent: only the controller can
+  // accept a current session/problem and it only changes in-memory UI state.
+  ctx.effect(() => {
+    const remote = ctx.get('remote')
+    if (remote === undefined) return () => {}
+    const off = remote.$on('probhub/tab-requested', (sessionId, problemId, tab) => {
+      probHubController.requestTab(tab, sessionId, problemId)
+    })
+    return off
+  }, 'ui-layout: ProbHub tab navigation hints')
 
   // Theme presentation: pure DOM writes from resolved snapshots — initial
   // state through the getter once, then event-driven only; no React path.

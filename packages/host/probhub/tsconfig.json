@@ -1,0 +1,23 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../webserver" },
+    { "path": "../../core/session" },
+    { "path": "../../session/session-persistence" },
+    { "path": "../../subprocess/subprocess" },
+    { "path": "../../sandbox/sandbox" },
+    { "path": "../../sandbox/sandbox-policy" },
+    { "path": "../../jobs/jobs" },
+    { "path": "../../core/tools" },
+    { "path": "../../core/agent" },
+    { "path": "../../api/remotes/tsconfig.host.json" },
+    { "path": "../../core/system-prompt" },
+    { "path": "../../runtime-diagnostics/invariants" }
+  ]
+}

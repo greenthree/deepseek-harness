@@ -107,6 +107,16 @@
         "tests/**/*.{ts,tsx}"
       ]
     },
+    "packages/host/probhub": {
+      "ignoreDependencies": [
+        "probhub"
+      ]
+    },
+    "packages/bundle/probhub": {
+      "ignoreDependencies": [
+        "@greenthree/dsh-host-probhub"
+      ]
+    },
     "packages/api/remotes": {
       "entry": [
         "tests/**/*.e2e.ts"

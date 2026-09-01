@@ -14,6 +14,10 @@ permissions:
 jobs:
   policy:
     name: Issue policy
+    # The upstream policy validates DeepSeek's organization Project metadata.
+    # This personal fork has no access to that Project, so the check is not
+    # applicable here; keep the workflow unchanged for every other owner.
+    if: github.repository_owner != 'greenthree'
     runs-on: ubuntu-latest
     steps:
       - name: Check out trusted policy

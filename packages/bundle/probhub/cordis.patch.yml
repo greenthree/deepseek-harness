@@ -1,0 +1,10 @@
+# Optional ProbHub integration for the downstream Web profile. The existing
+# Web profile owns the Host bridge row; this layer keeps it configured, adds
+# background tools, and mounts this package for browser compatibility checks.
+
+- insert:
+    - id: probhub
+      name: '@greenthree/dsh-host-probhub'
+      inject: [webServer]
+    - id: probhub-tools
+      name: '@greenthree/dsh-host-probhub/tools'

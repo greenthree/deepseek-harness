@@ -430,13 +430,14 @@ describe('Issue lifecycle workflow', () => {
     const lifecycleJob = workflowJob(lifecycle, 'lifecycle')
     if (!Array.isArray(lifecycleJob.steps)) throw new TypeError('Issue lifecycle job must define steps')
 
-    // The job has no job-level `if`, so it is listed on every pull_request /
-    // pull_request_review event and reports success instead of a gray skip. The
-    // write-capable steps are gated at step level so approved/commented reviews
-    // never mint a Project/Issue App token nor touch the board.
+    // The upstream job is listed on every pull_request / pull_request_review
+    // event and gates writes at step level. Personal forks do not have the
+    // DeepSeek organization Project/App credentials, so this fork adds a
+    // repository-owner guard at job level; that deliberate exception keeps the
+    // organization-bound check from reporting a false failure here.
     expect(lifecycle.on).toHaveProperty('pull_request')
     expect(lifecycle.on).toHaveProperty('pull_request_review')
-    expect(lifecycleJob.if).toBeUndefined()
+    expect(lifecycleJob.if).toBe("github.repository_owner != 'greenthree'")
     // Keep the subscription-type gates: issue-lifecycle does not re-subscribe
     // ready_for_review (issue-policy owns that) and only reacts to submitted
     // review events.
@@ -478,6 +479,41 @@ describe('npm release workflows', () => {
       expect(publish.environment).toBe('npm-publish')
       expect(publish.concurrency).toMatchObject({ group: 'Release-publish' })
     }
+  })
+
+  it('keeps the standalone ProbHub publication sequence isolated from dsh', () => {
+    const pack = loadWorkflow('.github/workflows/release-probhub.yml')
+    const publish = loadWorkflow('.github/workflows/release-probhub-publish.yml')
+    if (!isRecord(pack.jobs) || !isRecord(publish.jobs)) {
+      throw new TypeError('ProbHub release workflows must define jobs')
+    }
+    expect(Object.keys(pack.jobs)).toEqual(['pack'])
+    expect(Object.keys(publish.jobs).sort()).toEqual(['pack', 'publish'])
+    const packJob = pack.jobs.pack
+    const publishPack = publish.jobs.pack
+    const publishJob = publish.jobs.publish
+    if (!isRecord(packJob) || !isRecord(publishPack) || !isRecord(publishJob)
+      || !Array.isArray(packJob.steps) || !Array.isArray(publishPack.steps)
+      || !Array.isArray(publishJob.steps)) {
+      throw new TypeError('ProbHub release jobs must define steps')
+    }
+
+    expect(packJob.name).toBe('Pack ProbHub tarballs')
+    expect(publishPack.name).toBe('Pack ProbHub tarballs')
+    const packCommands = [...packJob.steps.filter(isRecord), ...publishPack.steps.filter(isRecord)]
+      .filter(isRecord)
+      .map(step => step.run)
+      .filter((run): run is string => typeof run === 'string')
+    expect(packCommands).toContain('pnpm run release:verify --family probhub')
+    expect(packCommands).toContain('pnpm run release:pack --family probhub --out dist/npm-probhub')
+    expect(packCommands).toContain('pnpm --filter @greenthree/dsh-probhub run bundle')
+    expect(publishJob.environment).toBe('npm-publish')
+    expect(publishJob.concurrency).toMatchObject({ group: 'Release-publish' })
+    const publishCommands = publishJob.steps
+      .filter(isRecord)
+      .map(step => step.run)
+      .filter((run): run is string => typeof run === 'string')
+    expect(publishCommands).toContain('pnpm run release:publish --family probhub --from dist/npm-probhub')
   })
 })
 

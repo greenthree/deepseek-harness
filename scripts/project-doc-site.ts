@@ -351,8 +351,14 @@ function projectPagesInto(
   /** Projected path to the repository file that claimed it, pages and images alike. */
   const claimed = new Map<string, string>()
 
-  /** Reserve one projected path, refusing a second source for it. */
-  const claim = (target: string, sourceAbs: string): void => {
+  /**
+   * Reserve one projected path, reusing an identical file from another build
+   * phase but refusing a different producer's bytes.
+   *
+   * VitePress MPA emits Markdown assets before `buildEnd`; the raw twin owns
+   * those same paths and must verify, rather than blindly overwrite, them.
+   */
+  const claim = (target: string, sourceAbs: string, expected?: Uint8Array): boolean => {
     const holder = claimed.get(target)
     if (holder !== undefined && holder !== sourceAbs) {
       throw new Error(
@@ -364,12 +370,20 @@ function projectPagesInto(
     // the twin pass, the build VitePress just wrote, including `public/`
     // copies. Overwriting one would silently corrupt the site.
     if (holder === undefined && existsSync(target)) {
-      throw new Error(
-        `project-doc-site: ${repoPath(sourceAbs, context.repoRoot)} would overwrite existing build file`
-        + ` ${relative(targetRoot, target).split(sep).join('/')}.`,
-      )
+      const same = expected !== undefined
+        && lstatSync(target).isFile()
+        && Buffer.from(readFileSync(target)).equals(Buffer.from(expected))
+      if (!same) {
+        throw new Error(
+          `project-doc-site: ${repoPath(sourceAbs, context.repoRoot)} would overwrite existing build file`
+          + ` ${relative(targetRoot, target).split(sep).join('/')}.`,
+        )
+      }
+      claimed.set(target, sourceAbs)
+      return true
     }
     claimed.set(target, sourceAbs)
+    return false
   }
 
   for (const page of entries) {
@@ -380,9 +394,6 @@ function projectPagesInto(
       throw new Error(`project-doc-site: source ${JSON.stringify(page.source)} does not exist or is not a file.`)
     }
     const output = resolve(targetRoot, page.route)
-    // Claimed before the images are placed: a page and an image landing on one
-    // path would otherwise overwrite each other in whichever order they ran.
-    claim(output, sourceAbs)
     mkdirSync(dirname(output), { recursive: true })
     const markdown = readFileSync(sourceAbs, 'utf8')
     const projected = rewriteMarkdown(markdown, {
@@ -405,14 +416,21 @@ function projectPagesInto(
         // from both.
         const name = basename(real)
         const target = resolve(dirname(output), name)
-        claim(target, real)
-        copyFileSync(real, target)
+        const reused = claim(target, real, readFileSync(real))
+        if (!reused) copyFileSync(real, target)
         // Encoded because the destination is a Markdown inline target, where an
         // unescaped space would end it early.
         return `./${encodeURI(name)}`
       },
     })
-    writeFileSync(output, pageContent(projected, page))
+    // Claim the page after projection so an MPA-produced twin can be reused
+    // only when its bytes are exactly the same as ours.
+    const rendered = pageContent(projected, page)
+    const reused = claim(output, sourceAbs, Buffer.from(rendered, 'utf8'))
+    if (!reused) {
+      mkdirSync(dirname(output), { recursive: true })
+      writeFileSync(output, rendered)
+    }
   }
 }
 

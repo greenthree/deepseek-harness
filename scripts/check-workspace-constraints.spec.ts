@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   checkExperimentalDependencyIsolation,
   checkExperimentalManifest,
+  checkProbhubVersions,
   type WorkspaceManifest,
 } from './check-workspace-constraints.ts'
 
@@ -71,6 +72,37 @@ describe('experimental workspace constraints', () => {
 
     expect(checkExperimentalDependencyIsolation(manifests)).toEqual([
       '@deepseek-ai/dsh-python-runtime: dependencies.@deepseek-ai/dsh-experimental-prototype must not reference an experimental package',
+    ])
+  })
+})
+
+describe('standalone ProbHub release constraints', () => {
+  const host: WorkspaceManifest = {
+    dir: 'packages/host/probhub',
+    manifest: { name: '@greenthree/dsh-host-probhub', version: '1.2.3' },
+  }
+  const bundle: WorkspaceManifest = {
+    dir: 'packages/bundle/probhub',
+    manifest: { name: '@greenthree/dsh-probhub', version: '1.2.3' },
+  }
+
+  it('accepts the paired independent version line', () => {
+    expect(checkProbhubVersions([host, bundle])).toEqual([])
+  })
+
+  it('rejects missing, mismatched, and invalid versions', () => {
+    expect(checkProbhubVersions([host])).toEqual([
+      'probhub release family must contain exactly 2 packages',
+    ])
+    expect(checkProbhubVersions([host, { ...bundle, manifest: { ...bundle.manifest, version: '2.0.0' } }])).toEqual([
+      'probhub release members must share one version: packages/host/probhub: 1.2.3, packages/bundle/probhub: 2.0.0',
+    ])
+    expect(checkProbhubVersions([host, { ...bundle, manifest: { ...bundle.manifest, version: 'latest' } }])).toEqual([
+      'probhub release members must declare valid semver versions',
+      'probhub release members must share one version: packages/host/probhub: 1.2.3, packages/bundle/probhub: latest',
+    ])
+    expect(checkProbhubVersions([{ ...host, dir: 'packages/other/probhub' }, bundle])).toEqual([
+      '@greenthree/dsh-host-probhub: probhub release member must live at packages/host/probhub, got packages/other/probhub',
     ])
   })
 })

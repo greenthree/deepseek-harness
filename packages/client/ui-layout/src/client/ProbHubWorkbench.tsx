@@ -1,0 +1,744 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import type { JobView, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import css from './ProbHubWorkbench.module.css'
+import { cancelProbHubJob, checkProbHubDelivery, checkProbHubPreview, listProbHubSourceTargets, probHubController, readProbHubSource, saveProbHubSource, startProbHubDeliveryJob, useProbHub, type ProbHubDeliveryGate, type ProbHubDeliveryOperation, type ProbHubSourceDocument, type ProbHubSourceError, type ProbHubSourceTarget } from './probhub-controller.ts'
+
+/** Read-only projection returned by the Harness ProbHub prefix route. */
+export interface ProbHubProblem {
+  id: string
+  index?: number
+  title?: string
+  judge?: string
+  difficulty?: string
+  status?: string
+  lintOk?: boolean
+  revision?: string
+  generation?: string
+}
+
+export interface ProbHubProblemReport {
+  id?: string
+  name?: string
+  difficulty?: number
+  tags?: string[]
+  limits?: Record<string, number>
+  tests?: Record<string, Record<string, number>>
+  groups?: Array<{ name?: string; role?: string; total_cases?: number; secret_cases?: number }>
+  aggregateConstraints?: { state?: string; multiCaseDetected?: boolean; summary?: Record<string, number> }
+  calibration?: { state?: string; status?: string }
+  judgeQa?: { state?: string; status?: string; declared_cases?: number; evidence_cases?: number; matched_cases?: number }
+  mutation?: { state?: string; status?: string; summary?: Record<string, number> }
+  killMatrix?: { evidenceState?: string; rows?: Array<{ program?: string; overall?: string }> }
+  diagnostics?: Array<{ code?: string; severity?: string; message?: string }>
+}
+
+export interface ProbHubReport {
+  ok: boolean
+  analysisState?: string
+  summary?: Record<string, number>
+  problems?: ProbHubProblemReport[]
+  diagnostics?: Array<{ code?: string; severity?: string; message?: string }>
+}
+
+export interface ProbHubOverview {
+  state: 'ready' | 'migration_required' | 'unavailable' | 'error'
+  workspaceId?: string
+  workspace?: { schemaVersion?: number }
+  revision?: string
+  generation?: string
+  problems?: ProbHubProblem[]
+  selectedId?: string
+  report?: ProbHubReport
+}
+
+const EMPTY_OVERVIEW: ProbHubOverview = { state: 'unavailable', problems: [] }
+const EMPTY_JOBS: readonly JobView[] = []
+const TABS = ['题面', '健康与评测', '试卷 PDF'] as const
+type Tab = (typeof TABS)[number]
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected ProbHub UI value: ${String(value)}`)
+}
+
+function displayTab(tab: 'statement' | 'health' | 'pdf'): Tab {
+  switch (tab) {
+    case 'statement': return '题面'
+    case 'health': return '健康与评测'
+    case 'pdf': return '试卷 PDF'
+    default: return assertNever(tab)
+  }
+}
+
+export interface ProbHubWorkbenchProps {
+  sessionId?: string | undefined
+  useSessions: SnapshotSelectorHook<SessionListState>
+  children?: ReactNode
+}
+
+interface SourceEditorState {
+  readonly target: string
+  readonly content: string
+  readonly originalContent: string
+  readonly revision: string
+  readonly bytes: number
+  readonly impact?: ProbHubSourceDocument['impact']
+  readonly loading?: boolean
+  readonly saving?: boolean
+  readonly error?: ProbHubSourceError
+  readonly message?: string
+}
+
+function sourceTargetLabel(target: ProbHubSourceTarget): string {
+  if (target.kind === 'statement') return '题面 · problem.md'
+  if (target.kind === 'config') return '配置 · probhub.yaml'
+  if (target.kind === 'code') return `代码 · ${target.name ?? target.target}`
+  if (target.kind === 'sample-input') return `样例输入 · ${target.name ?? target.target}`
+  return `正式输入 · ${target.name ?? target.target}`
+}
+
+function clearEditorFeedback(state: SourceEditorState): SourceEditorState {
+  const next = { ...state }
+  delete next.error
+  delete next.message
+  return next
+}
+
+function statusLabel(status: string | undefined): string {
+  if (status === 'current') return 'current'
+  if (status === 'stale') return 'stale'
+  if (status === 'blocked') return 'blocked'
+  if (status === 'warn') return 'warn'
+  return status ?? 'unavailable'
+}
+
+/** The health tab only owns ProbHub jobs; shell and plugin jobs stay in ui-jobs. */
+function filterProbHubJobs(jobs: readonly JobView[]): readonly JobView[] {
+  return jobs.filter(job => job.kind === 'probhub')
+}
+
+/** Keep the displayed lifecycle vocabulary closed to the JobView contract. */
+function jobStatusLabel(status: JobView['status']): JobView['status'] {
+  switch (status) {
+    case 'running': return 'running'
+    case 'stopping': return 'stopping'
+    case 'completed': return 'completed'
+    case 'failed': return 'failed'
+    case 'killed': return 'killed'
+    default: return assertNever(status)
+  }
+}
+
+function deliveryStatus(value: string | undefined): string {
+  return value === undefined || value.length === 0 ? '待检查' : value
+}
+
+function deliveryOperationLabel(operation: ProbHubDeliveryOperation): string {
+  if (operation === 'judge') return 'Judge'
+  if (operation === 'stress') return 'stress（1000）'
+  if (operation === 'judge-qa') return 'Judge QA'
+  if (operation === 'mutation') return 'mutation'
+  if (operation === 'checkpoint') return 'Checkpoint'
+  if (operation === 'seal') return 'Seal'
+  return '组装预览'
+}
+
+function deliveryBlockerLabel(code: string): string {
+  const labels: Record<string, string> = {
+    generation_invalid: '预览 generation 无效',
+    generation_incomplete: '预览 generation 未完成',
+    generation_not_sealed: '仍有题目未 Seal',
+    generation_missing: 'generation 缺少题目',
+    generation_problem_missing: '当前题目不在 generation 中',
+    generation_stale: 'generation 已过期',
+    status_problem_missing: '当前题目状态缺失',
+    status_stale: '题目正式产物已过期',
+    calibration_missing: '缺少校准 evidence',
+    calibration_not_current: '校准 evidence 已过期',
+    judge_qa_failed: 'Judge QA 未通过',
+    status_unavailable: 'Core status 不可用',
+    report_problem_missing: 'Core report 缺少当前题目',
+    sealed_revision_invalid: 'sealed revision 无效',
+    sealed_revision_missing: '缺少 sealed revision',
+    revision_mismatch: 'source/data 与 sealed revision 不一致',
+    package_verify_failed: '正式 ZIP 验证失败',
+    package_verify_unavailable: '正式 ZIP 验证不可用',
+    package_invalid: '正式 ZIP 路径无效',
+    report_failed: 'Core report 未通过',
+    report_unavailable: 'Core report 不可用',
+    generation_unavailable: 'Core generation 状态不可用',
+  }
+  return labels[code] ?? code
+}
+
+function shortDeliveryHash(value: string | undefined): string {
+  return value === undefined ? '—' : `${value.slice(0, 12)}…`
+}
+
+function deliveryBoolean(value: boolean | undefined): string {
+  return value === true ? '是' : value === false ? '否' : '未返回'
+}
+
+function deliveryVerificationSummary(value: ProbHubDeliveryGate['checks']['packages'][string] | undefined): string {
+  if (value === undefined) return '未返回'
+  const verification = value.verification ?? value
+  const state = verification.ok ? 'passed' : verification.state ?? 'failed'
+  const counts = [
+    verification.fileCount === undefined ? undefined : `${verification.fileCount} files`,
+    verification.sampleCount === undefined ? undefined : `${verification.sampleCount} sample`,
+    verification.secretCount === undefined ? undefined : `${verification.secretCount} secret`,
+  ].filter((item): item is string => item !== undefined)
+  return counts.length === 0 ? state : `${state} · ${counts.join(' · ')}`
+}
+
+function deliveryGateLabel(gate: ProbHubDeliveryGate | undefined, problemId: string): string {
+  if (gate === undefined) return '待检查'
+  if (!gate.ok) return gate.state === 'error' ? '检查失败' : '被阻断'
+  return gate.checks.packages[problemId]?.state === 'missing' ? '可构建（ZIP待生成）' : '可交付'
+}
+
+/** Display the bounded checks that a user must review before formal Build. */
+function DeliveryDetails({ gate, problemId }: { gate: ProbHubDeliveryGate; problemId: string }) {
+  const generation = gate.checks.generation
+  const revision = gate.checks.revision[problemId]
+  const packageCheck = gate.checks.packages[problemId]
+  const packagePending = packageCheck?.state === 'missing'
+  const reportState = gate.report === undefined ? '未返回' : gate.report.ok ? 'passed' : 'failed'
+  const releaseState = gate.ok ? packagePending ? '可构建（ZIP待生成）' : '可交付' : gate.state === 'error' ? '检查失败' : '被阻断'
+  const releaseDataState = gate.ok ? packagePending ? 'pending' : 'passed' : gate.state === 'error' ? 'failed' : 'blocked'
+  return (
+    <section className={css.deliveryDetails} aria-label="正式交付摘要">
+      <div className={css.deliveryDetailsHeader}>
+        <div><strong>发布前确认摘要</strong><small>只显示当前题目和当前 generation 的有限状态。</small></div>
+        <strong className={css.deliveryDetailsState} data-state={releaseDataState}>{releaseState}</strong>
+      </div>
+      <dl className={css.deliveryDetailsList}>
+        <div><dt>generation</dt><dd>{generation.generationId ?? '—'} · {generation.state ?? '未返回'}</dd></div>
+        <div><dt>完整性</dt><dd>{generation.complete === true ? 'complete' : generation.complete === false ? 'incomplete' : '未返回'} · all sealed {deliveryBoolean(generation.allSealed)}</dd></div>
+        <div><dt>sealed revision</dt><dd data-state={revision?.consistent && revision.sealed ? 'passed' : 'blocked'}>{revision?.sealed ? 'sealed' : '未 sealed'} · {revision?.consistent ? '与 source/data 一致' : '与 source/data 不一致'}</dd></div>
+        <div><dt>source / data</dt><dd>{shortDeliveryHash(revision?.sourceHash)} / {shortDeliveryHash(revision?.dataHash)}</dd></div>
+        <div><dt>ZIP 验证</dt><dd data-state={packageCheck?.ok === true ? 'passed' : 'blocked'}>{deliveryVerificationSummary(packageCheck)}</dd></div>
+        <div><dt>Core report</dt><dd data-state={reportState === 'passed' ? 'passed' : 'blocked'}>{reportState}</dd></div>
+      </dl>
+      {generation.missing.length > 0 && <p className={css.deliveryMissing}>generation 缺少：{generation.missing.slice(0, 12).join('、')}{generation.missing.length > 12 ? ` 等 ${generation.missing.length} 道题` : ''}</p>}
+      <p className={css.deliveryConfirmation}>{gate.ok ? `${packagePending ? '当前 ZIP 尚未生成，正式 Build 会在 Core 事务中创建并验证它。' : `已检查 ${problemId}。`} 请在 AI 副驾驶中再次确认发布意图，随后通过 DSH approval 执行正式 Build。` : '解决上面的阻断原因后重新检查；正式 Build 不会绕过这些检查。'}</p>
+    </section>
+  )
+}
+
+function latestOperationJob(jobs: readonly JobView[], operation: ProbHubDeliveryOperation, problemId: string): JobView | undefined {
+  const label = operation === 'assemble' ? 'assemble' : `${operation} ${problemId}`
+  return jobs.filter(job => job.label === label).at(-1)
+}
+
+function isLiveJob(job: JobView | undefined): boolean {
+  return job?.status === 'running' || job?.status === 'stopping'
+}
+
+
+function StateNotice({ overview }: { overview: ProbHubOverview }) {
+  const title = overview.state === 'migration_required'
+    ? '需要迁移到 Workspace Schema v1'
+    : overview.state === 'unavailable'
+      ? 'ProbHub 尚未连接'
+      : '暂时无法读取题目状态'
+  const detail = overview.state === 'migration_required'
+    ? '当前 Session 没有可执行的 .probhub/workspace.yaml。工作台保持只读。'
+    : overview.state === 'unavailable'
+      ? '等待 Harness Host 提供同源只读摘要；不会读取旧 meta.json 或生成物。'
+      : '读取失败时保持 fail closed，不展示可能过期的题面、PDF 或 evidence。'
+  return (
+    <div className={css.stateNotice} role="status">
+      <span className={css.noticeMark} aria-hidden="true">i</span>
+      <div><strong>{title}</strong><p>{detail}</p></div>
+    </div>
+  )
+}
+
+function WorkbenchBody({
+  sessionId,
+  problem,
+  report,
+  jobs,
+  tab,
+  editor,
+  sourceTargets,
+  onOpenEditor,
+  onSelectEditorTarget,
+  onChangeEditor,
+  onSaveEditor,
+  onReloadEditor,
+  deliveryBusy,
+  deliveryError,
+  deliveryMessage,
+  deliveryGate,
+  deliveryGateError,
+  onCheckDelivery,
+  onStartDelivery,
+  cancelBusy,
+  onCancelJob,
+  previewAvailable,
+}: {
+  sessionId: string | undefined
+  problem: ProbHubProblem | undefined
+  report: ProbHubProblemReport | undefined
+  jobs: readonly JobView[]
+  tab: Tab
+  editor: SourceEditorState | undefined
+  sourceTargets: readonly ProbHubSourceTarget[]
+  onOpenEditor: () => void
+  onSelectEditorTarget: (target: string) => void
+  onChangeEditor: (content: string) => void
+  onSaveEditor: () => void
+  onReloadEditor: () => void
+  deliveryBusy: ProbHubDeliveryOperation | undefined
+  deliveryError: string | undefined
+  deliveryMessage: string | undefined
+  deliveryGate: ProbHubDeliveryGate | undefined
+  deliveryGateError: string | undefined
+  onCheckDelivery: () => void
+  onStartDelivery: (operation: ProbHubDeliveryOperation) => void
+  cancelBusy: string | undefined
+  onCancelJob: (jobId: string) => void
+  previewAvailable: boolean | undefined
+}) {
+  if (problem === undefined) {
+    return <StateNotice overview={EMPTY_OVERVIEW} />
+  }
+  if (tab === '题面') {
+    const editorTarget = editor === undefined ? undefined : sourceTargets.find(target => target.target === editor.target)
+    return (
+      <div className={css.previewStack}>
+        <div className={css.previewCard}>
+          <div className={css.previewEyebrow}>题面预览 · 只读</div>
+          <h3>{problem.title || problem.id}</h3>
+          <p>题面内容来自当前 Session 的规范工作区。编辑会先校验 Core revision，保存只写入白名单中的当前源文件。</p>
+          {editor === undefined && <>
+            <div className={css.skeletonLine} /><div className={css.skeletonLine} /><div className={css.skeletonLineShort} />
+            <button className={css.editorButton} type="button" onClick={onOpenEditor}>编辑题面</button>
+          </>}
+          {editor?.loading && <div className={css.editorNotice}>正在读取题面…</div>}
+          {editor && !editor.loading && <div className={css.editorPanel}>
+            <div className={css.editorHeader}>
+              <div><strong>{editorTarget === undefined ? '源文件编辑' : sourceTargetLabel(editorTarget)}</strong><small>workspace-write · revision {editor.revision.slice(0, 12)}…</small></div>
+              <button className={css.editorButtonSecondary} type="button" onClick={onReloadEditor} disabled={editor.saving}>重新读取</button>
+            </div>
+            <label className={css.editorTargetRow}>编辑目标
+              <select
+                className={css.editorTargetSelect}
+                aria-label="编辑目标"
+                value={editor.target}
+                disabled={editor.saving || editor.content !== editor.originalContent}
+                onChange={(event) => { onSelectEditorTarget(event.target.value) }}
+              >
+                {sourceTargets.map(target => <option key={target.target} value={target.target}>{sourceTargetLabel(target)}</option>)}
+              </select>
+            </label>
+            <textarea className={css.sourceEditor} value={editor.content} onChange={(event) => { onChangeEditor(event.target.value) }} spellCheck={false} aria-label="题面编辑器" />
+            {editor.impact && <div className={css.impactNotice}>保存后将标记 source 与正式 PDF/ZIP 为 stale，需要重新 lint、验证和分发。</div>}
+            {editor.error && <div className={css.editorError} role="alert">{editor.error.message}{editor.error.code === 'source_conflict' && ' 请重新读取后再保存。'}</div>}
+            {editor.message && <div className={css.editorSuccess} role="status">{editor.message}</div>}
+            <div className={css.editorActions}>
+              <span>{editor.bytes} bytes</span>
+              <button className={css.editorButton} type="button" onClick={onSaveEditor} disabled={editor.saving || editor.content === editor.originalContent}>{editor.saving ? '保存中…' : '保存源文件'}</button>
+            </div>
+          </div>}
+        </div>
+        <div className={css.metaGrid}>
+          <div><span>Judge</span><strong>{problem.judge ?? 'Standard'}</strong></div>
+          <div><span>难度</span><strong>{problem.difficulty ?? '待定'}</strong></div>
+          <div><span>revision</span><strong>{problem.revision ?? '—'}</strong></div>
+          <div><span>generation</span><strong>{problem.generation ?? '—'}</strong></div>
+          {report?.tests?.total && <div><span>测试点</span><strong>{report.tests.total.cases ?? '—'}</strong></div>}
+          {report?.aggregateConstraints?.state && <div><span>累计约束</span><strong>{report.aggregateConstraints.state}</strong></div>}
+        </div>
+      </div>
+    )
+  }
+  if (tab === '健康与评测') {
+    if (problem.status === undefined && report === undefined && jobs.length === 0) return <StateNotice overview={EMPTY_OVERVIEW} />
+    const anyJobRunning = jobs.some(isLiveJob)
+    return (
+      <div className={css.previewStack}>
+        <section className={css.deliveryCard} aria-label="ProbHub 交付清单">
+          <div className={css.deliveryHeader}>
+            <div><strong>交付清单</strong><small>状态来自当前 Session；动作只创建后台任务，不发布正式 PDF/ZIP。</small></div>
+            <span>当前状态</span>
+          </div>
+          <ul className={css.deliveryList}>
+            <li><span>规范源</span><strong data-state={problem.status}>{deliveryStatus(problem.status)}</strong></li>
+            <li><span>Lint</span><strong data-state={problem.lintOk === true ? 'passed' : 'pending'}>{problem.lintOk === true ? 'passed' : '待检查'}</strong></li>
+            <li><span>Judge QA</span><strong data-state={report?.judgeQa?.state}>{deliveryStatus(report?.judgeQa?.state)}</strong></li>
+            <li><span>校准</span><strong data-state={report?.calibration?.state}>{deliveryStatus(report?.calibration?.state)}</strong></li>
+            <li><span>预览 generation</span><strong data-state={problem.generation === undefined ? 'missing' : 'available'}>{problem.generation === undefined ? '未组装' : 'available'}</strong></li>
+            <li><span>正式交付</span><strong data-state={deliveryGate === undefined ? 'manual' : deliveryGate.ok ? deliveryGate.checks.packages[problem.id]?.state === 'missing' ? 'pending' : 'passed' : deliveryGate.state === 'error' ? 'failed' : 'blocked'}>{deliveryGateLabel(deliveryGate, problem.id)}</strong></li>
+          </ul>
+          <div className={css.deliveryActions}>
+            {(['judge', 'stress', 'judge-qa', 'mutation', 'checkpoint', 'seal', 'assemble'] as const).map((operation) => {
+              const job = latestOperationJob(jobs, operation, problem.id)
+              const running = isLiveJob(job)
+              const suffix = running && job !== undefined ? ` · ${jobStatusLabel(job.status)}` : ''
+              return <button key={operation} type="button" onClick={() => { onStartDelivery(operation) }} disabled={deliveryBusy !== undefined || running}>{deliveryBusy === operation ? `${deliveryOperationLabel(operation)}…` : `${deliveryOperationLabel(operation)}${suffix}`}</button>
+            })}
+          </div>
+          <div className={css.deliveryGateActions}>
+            <button type="button" onClick={onCheckDelivery} disabled={deliveryBusy !== undefined || anyJobRunning}>{deliveryGate === undefined ? '检查正式交付' : '重新检查正式交付'}</button>
+            <small>正式 Build 仍需在副驾驶中显式确认，并通过 DSH approval。</small>
+          </div>
+          {deliveryGateError && <div className={css.editorError} role="alert">{deliveryGateError}</div>}
+          {deliveryGate && !deliveryGate.ok && deliveryGate.blockers.length > 0 && <ul className={css.deliveryBlockers} aria-label="正式交付阻断原因">
+            {deliveryGate.blockers.slice(0, 12).map((blocker, index) => <li key={`${blocker.code}-${blocker.problemId ?? 'workspace'}-${index}`}>{deliveryBlockerLabel(blocker.code)}{blocker.problemId ? ` · ${blocker.problemId}` : ''}</li>)}
+          </ul>}
+          {deliveryGate && <DeliveryDetails gate={deliveryGate} problemId={problem.id} />}
+          {deliveryError && <div className={css.editorError} role="alert">{deliveryError}</div>}
+          {deliveryMessage && <div className={css.editorSuccess} role="status">{deliveryMessage}</div>}
+        </section>
+        <div className={css.healthCard}>
+          <span className={css.healthIcon}>{problem.status === 'current' && report?.judgeQa?.state !== 'failed' ? '✓' : '!'}</span>
+          <div><strong>健康摘要</strong><p>状态、数据覆盖、累计约束和 Judge QA 均来自 Core 的脱敏报告。</p></div>
+          <span className={css.healthStatus}>{statusLabel(problem.status ?? report?.judgeQa?.state)}</span>
+        </div>
+        {report && <div className={css.reportGrid}>
+          <div className={css.reportCard}><span>数据组</span><strong>{report.groups?.length ?? 0}</strong><small>{report.groups?.filter(group => group.role === 'wrong-solution-killer').length ?? 0} 个错解覆盖组</small></div>
+          <div className={css.reportCard}><span>Judge QA</span><strong>{report.judgeQa?.state ?? 'not-configured'}</strong><small>{report.judgeQa?.matched_cases ?? 0}/{report.judgeQa?.declared_cases ?? 0} cases</small></div>
+          <div className={css.reportCard}><span>累计约束</span><strong>{report.aggregateConstraints?.state ?? 'not-detected'}</strong><small>{report.aggregateConstraints?.multiCaseDetected ? '检测到多测' : '未检测到多测'}</small></div>
+          <div className={css.reportCard}><span>校准</span><strong>{report.calibration?.state ?? 'missing'}</strong><small>本机测量仅作参考</small></div>
+        </div>}
+        {jobs.length > 0 && <section className={css.jobSummary} aria-label="ProbHub 后台任务">
+          <div className={css.jobSummaryHeader}>
+            <div><strong>后台评测任务</strong><small>当前 Session 的 ProbHub Job</small></div>
+            <span>{jobs.length}</span>
+          </div>
+          <ul className={css.jobList}>
+            {jobs.map((job) => {
+              const status = jobStatusLabel(job.status)
+              return (
+                <li key={job.id} className={css.jobRow} data-status={status}>
+                  <span className={css.jobDot} data-status={status} aria-hidden="true" />
+                  <div className={css.jobIdentity}>
+                    <strong title={job.label}>{job.label}</strong>
+                    {job.detail && <small title={job.detail}>{job.detail}</small>}
+                  </div>
+                  <span className={css.jobStatus} data-status={status}>{status}</span>
+                  {(job.status === 'running' || job.status === 'stopping')
+                    ? <button className={css.jobCancel} type="button" onClick={() => { onCancelJob(job.id) }} disabled={cancelBusy === job.id}>{cancelBusy === job.id ? '取消中…' : '取消'}</button>
+                    : null}
+                </li>
+              )
+            })}
+          </ul>
+        </section>}
+      </div>
+    )
+  }
+  const previewUrl = sessionId !== undefined && problem.generation !== undefined && previewAvailable === true
+    ? `/probhub/api/problems/${encodeURIComponent(problem.id)}/preview?sessionId=${encodeURIComponent(sessionId)}`
+    : undefined
+  if (previewAvailable === undefined && problem.generation !== undefined) {
+    return <div className={css.pdfPlaceholder}>
+      <div className={css.pdfIcon}>PDF</div>
+      <strong>正在检查隔离预览</strong>
+      <p>正在确认当前 generation 仍可安全读取。</p>
+    </div>
+  }
+  return (
+    previewUrl === undefined
+      ? <div className={css.pdfPlaceholder}>
+        <div className={css.pdfIcon}>PDF</div>
+        <strong>试卷 PDF 预览</strong>
+        <p>{problem.generation === undefined ? '当前没有隔离 preview generation。请先完成 checkpoint、seal 和组装预览。' : '当前 generation 不可用或已过期，请重新组装预览。'}</p>
+      </div>
+      : <div className={css.pdfPreview}>
+        <div className={css.pdfPreviewHeader}>
+          <div><strong>隔离 preview generation</strong><small>{problem.generation}</small></div>
+          <span>只读 · 不发布正式产物</span>
+        </div>
+        <iframe className={css.pdfFrame} title={`${problem.id} 试卷 PDF 预览`} src={previewUrl} />
+      </div>
+  )
+}
+
+/**
+ * Read-only ProbHub workbench. The fetch is intentionally a narrow same-origin
+ * projection; a missing route never falls back to legacy files or invents
+ * problem data.
+ */
+export function ProbHubWorkbench({ sessionId, useSessions, children }: ProbHubWorkbenchProps) {
+  const { snapshot: overview, selectedId, tabRequest } = useProbHub()
+  const [tab, setTab] = useState<Tab>('题面')
+  const [copilotOpen, setCopilotOpen] = useState(false)
+  const [editor, setEditor] = useState<SourceEditorState | undefined>()
+  const [sourceTargets, setSourceTargets] = useState<readonly ProbHubSourceTarget[]>([])
+  const [deliveryBusy, setDeliveryBusy] = useState<ProbHubDeliveryOperation | undefined>()
+  const [deliveryError, setDeliveryError] = useState<string | undefined>()
+  const [deliveryMessage, setDeliveryMessage] = useState<string | undefined>()
+  const [deliveryGate, setDeliveryGate] = useState<ProbHubDeliveryGate | undefined>()
+  const [deliveryGateError, setDeliveryGateError] = useState<string | undefined>()
+  const deliveryRequest = useRef(0)
+  const deliveryGateRequest = useRef(0)
+  const [cancelBusy, setCancelBusy] = useState<string | undefined>()
+  const cancelRequest = useRef(0)
+  const [previewAvailable, setPreviewAvailable] = useState<boolean | undefined>()
+  const previewRequest = useRef(0)
+  const appliedTabRequest = useRef(0)
+  const editorRequest = useRef(0)
+  const lastStableSession = useRef(sessionId)
+  const lastStableProblem = useRef<string | undefined>(undefined)
+
+  const problems = overview.problems ?? []
+  const sessionJobs = useSessions(state => sessionId === undefined
+    ? EMPTY_JOBS
+    : state.jobsBySession[sessionId as SessionId] ?? EMPTY_JOBS)
+  const jobs = useMemo(() => filterProbHubJobs(sessionJobs), [sessionJobs])
+  const selected = useMemo(() => problems.find(problem => problem.id === selectedId) ?? problems[0], [problems, selectedId])
+  const selectedProblemId = useRef<string | undefined>(undefined)
+  selectedProblemId.current = selected?.id
+  const selectedReport = useMemo(
+    () => overview.report?.problems?.find(report => report.id === selected?.id),
+    [overview.report, selected?.id],
+  )
+  useEffect(() => {
+    const sessionChanged = lastStableSession.current !== sessionId
+    const problemChanged = selected?.id !== undefined
+      && lastStableProblem.current !== undefined
+      && selected.id !== lastStableProblem.current
+    if (sessionChanged || problemChanged) {
+      deliveryRequest.current += 1
+      cancelRequest.current += 1
+      previewRequest.current += 1
+      setEditor(undefined)
+      setSourceTargets([])
+      setDeliveryBusy(undefined)
+      setDeliveryError(undefined)
+      setDeliveryMessage(undefined)
+      setDeliveryGate(undefined)
+      setDeliveryGateError(undefined)
+      setCancelBusy(undefined)
+      setPreviewAvailable(undefined)
+    }
+    lastStableSession.current = sessionId
+    if (selected?.id !== undefined) lastStableProblem.current = selected.id
+  }, [selected?.id, sessionId])
+  const readEditorTarget = async (target: string): Promise<void> => {
+    if (sessionId === undefined || selected === undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++editorRequest.current
+    setEditor((current) => {
+      const base = current ?? { target, content: '', originalContent: '', revision: '', bytes: 0 }
+      const next = clearEditorFeedback(base)
+      return {
+        ...next,
+        target,
+        loading: true,
+        saving: false,
+      }
+    })
+    const result = await readProbHubSource(targetSession, targetProblem, target)
+    if (requestId !== editorRequest.current || targetSession !== sessionId || targetProblem !== selected.id) return
+    if (result.error !== undefined || result.document === undefined) {
+      setEditor(current => current === undefined ? current : { ...current, loading: false, error: result.error ?? { code: 'source_read_failed', message: '无法读取源文件' } })
+      return
+    }
+    setEditor({ ...result.document, originalContent: result.document.content })
+  }
+  const openEditor = async (): Promise<void> => {
+    if (sessionId === undefined || selected === undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++editorRequest.current
+    setEditor({ target: 'statement', content: '', originalContent: '', revision: '', bytes: 0, loading: true })
+    const [targetsResult, result] = await Promise.all([
+      listProbHubSourceTargets(targetSession, targetProblem),
+      readProbHubSource(targetSession, targetProblem),
+    ])
+    if (requestId !== editorRequest.current || targetSession !== sessionId || targetProblem !== selected.id) return
+    if (targetsResult.targets !== undefined) setSourceTargets(targetsResult.targets)
+    if (result.error !== undefined || result.document === undefined) {
+      setEditor({ target: 'statement', content: '', originalContent: '', revision: '', bytes: 0, error: result.error ?? { code: 'source_read_failed', message: '无法读取题面' } })
+      return
+    }
+    if (targetsResult.targets === undefined) setSourceTargets([{ target: result.document.target, kind: 'statement', bytes: result.document.bytes }])
+    setEditor({ ...result.document, originalContent: result.document.content })
+  }
+  const selectEditorTarget = (target: string): void => {
+    if (editor !== undefined && editor.content !== editor.originalContent) {
+      setEditor(current => current === undefined ? current : { ...current, error: { code: 'source_unsaved', message: '请先保存或重新读取当前文件，再切换编辑目标。' } })
+      return
+    }
+    if (!sourceTargets.some(item => item.target === target)) return
+    void readEditorTarget(target)
+  }
+  const reloadEditor = (): void => { void readEditorTarget(editor?.target ?? 'statement') }
+  const saveEditor = async (): Promise<void> => {
+    if (sessionId === undefined || selected === undefined || editor === undefined || editor.loading || editor.saving) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    setEditor(current => current === undefined ? current : { ...current, saving: true })
+    const result = await saveProbHubSource(targetSession, targetProblem, editor.target, editor.content, editor.revision)
+    if (targetSession !== sessionId || targetProblem !== selected.id) return
+    if (result.error !== undefined || result.document === undefined) {
+      setEditor(current => current === undefined ? current : { ...current, saving: false, error: result.error ?? { code: 'source_write_failed', message: '保存题面失败' } })
+      return
+    }
+    setEditor({ ...result.document, originalContent: result.document.content, message: '已保存。题目状态将在刷新后更新为 stale。' })
+    void probHubController.refresh(sessionId)
+  }
+  const startDelivery = async (operation: ProbHubDeliveryOperation): Promise<void> => {
+    if (sessionId === undefined || selected === undefined || deliveryBusy !== undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++deliveryRequest.current
+    setDeliveryBusy(operation)
+    setDeliveryError(undefined)
+    setDeliveryMessage(undefined)
+    setDeliveryGate(undefined)
+    setDeliveryGateError(undefined)
+    const result = await startProbHubDeliveryJob(
+      targetSession,
+      operation,
+      operation === 'assemble' ? undefined : targetProblem,
+      false,
+      operation === 'stress' ? 1000 : undefined,
+      operation === 'stress' ? 12345 : undefined,
+    )
+    if (requestId !== deliveryRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
+    if (result.error !== undefined || result.job === undefined) {
+      setDeliveryBusy(undefined)
+      setDeliveryError(result.error?.message ?? '无法启动 ProbHub 交付任务')
+      return
+    }
+    setDeliveryBusy(undefined)
+    setDeliveryMessage(`已提交 ${deliveryOperationLabel(operation)} 任务（${result.job.id}），可在健康摘要中查看状态。`)
+  }
+  const checkDelivery = async (): Promise<void> => {
+    if (sessionId === undefined || selected === undefined) return
+    const targetSession = sessionId
+    const targetProblem = selected.id
+    const requestId = ++deliveryGateRequest.current
+    setDeliveryGateError(undefined)
+    const result = await checkProbHubDelivery(targetSession, [targetProblem])
+    if (requestId !== deliveryGateRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
+    if (result.error !== undefined || result.delivery === undefined) {
+      setDeliveryGate(undefined)
+      setDeliveryGateError(result.error?.message ?? '无法读取正式交付门禁')
+      return
+    }
+    setDeliveryGate(result.delivery)
+  }
+  const cancelJob = async (jobId: string): Promise<void> => {
+    if (sessionId === undefined || cancelBusy !== undefined) return
+    const targetSession = sessionId
+    const requestId = ++cancelRequest.current
+    setCancelBusy(jobId)
+    setDeliveryError(undefined)
+    const result = await cancelProbHubJob(targetSession, jobId)
+    if (requestId !== cancelRequest.current || targetSession !== sessionId) return
+    setCancelBusy(undefined)
+    if (result.error !== undefined) {
+      setDeliveryError(result.error.message)
+      return
+    }
+    setDeliveryMessage(result.cancelled === true ? `已请求取消任务 ${jobId}。` : `任务 ${jobId} 已结束。`)
+  }
+  useEffect(() => {
+    const targetSession = sessionId
+    const targetProblem = selected?.id
+    const targetGeneration = selected?.generation
+    const requestId = ++previewRequest.current
+    if (tab !== '试卷 PDF' || targetSession === undefined || targetProblem === undefined || targetGeneration === undefined) {
+      setPreviewAvailable(undefined)
+      return
+    }
+    setPreviewAvailable(undefined)
+    void checkProbHubPreview(targetSession, targetProblem).then((available) => {
+      if (requestId !== previewRequest.current || targetSession !== sessionId || targetProblem !== selectedProblemId.current) return
+      setPreviewAvailable(available)
+    })
+  }, [selected?.generation, selected?.id, sessionId, tab])
+  useEffect(() => {
+    if (tabRequest === undefined || tabRequest.sequence <= appliedTabRequest.current) return
+    // The controller already rejects foreign identities, but retain the
+    // component-side fence for remounts and stale snapshots: a location hint
+    // may only move the currently rendered Session/problem.
+    if (tabRequest.sessionId !== sessionId || tabRequest.problemId !== selected?.id) return
+    appliedTabRequest.current = tabRequest.sequence
+    setTab(displayTab(tabRequest.tab))
+  }, [selected?.id, sessionId, tabRequest])
+  const workspaceLabel = overview.workspaceId
+    ?? (overview.workspace?.schemaVersion === 1 ? 'Schema v1 workspace' : '未返回 workspace')
+  const isNotice = overview.state !== 'ready'
+
+  return (
+    <div className={css.shell} data-probhub-workbench data-layout="workbench">
+      <section className={css.workbench} aria-label="ProbHub 工作台">
+        <header className={css.workbenchHeader}>
+          <div><span className={css.kicker}>PROBHUB WORKSPACE</span><h2>题目工作台</h2></div>
+          <div className={css.headerFacts}><span>{workspaceLabel}</span><span className={css.readOnlyBadge}>只读 P1</span></div>
+          <button className={css.drawerToggle} data-ai-toggle type="button" aria-expanded={copilotOpen} onClick={() => { setCopilotOpen(open => !open) }}>AI 副驾驶</button>
+        </header>
+        <div className={css.workbenchBody}>
+          <main className={css.problemMain}>
+            <div className={css.problemTitleRow}>
+              <div><span className={css.kicker}>题目详情</span><h3>{selected ? (selected.title || selected.id) : (isNotice ? '等待题目列表' : '选择题目')}</h3></div>
+              {selected && <span className={css.judgePill}>{selected.judge ?? 'Standard'}</span>}
+            </div>
+            <nav className={css.tabs} aria-label="题目视图">
+              {TABS.map(item => <button key={item} type="button" aria-selected={tab === item} data-active={tab === item || undefined} onClick={() => { setTab(item) }}>{item}</button>)}
+            </nav>
+            {isNotice
+              ? <StateNotice overview={overview} />
+              : <WorkbenchBody
+                sessionId={sessionId}
+                problem={selected}
+                report={selectedReport}
+                jobs={jobs}
+                tab={tab}
+                editor={editor}
+                sourceTargets={sourceTargets}
+                onOpenEditor={() => { void openEditor() }}
+                onSelectEditorTarget={selectEditorTarget}
+                onChangeEditor={(content) => {
+                  setEditor(current => current === undefined
+                    ? current
+                    : { ...clearEditorFeedback(current), content, bytes: new TextEncoder().encode(content).byteLength })
+                }}
+                onSaveEditor={() => { void saveEditor() }}
+                onReloadEditor={reloadEditor}
+                deliveryBusy={deliveryBusy}
+                deliveryError={deliveryError}
+                deliveryMessage={deliveryMessage}
+                deliveryGate={deliveryGate}
+                deliveryGateError={deliveryGateError}
+                onCheckDelivery={() => { void checkDelivery() }}
+                onStartDelivery={(operation) => { void startDelivery(operation) }}
+                cancelBusy={cancelBusy}
+                onCancelJob={(jobId) => { void cancelJob(jobId) }}
+                previewAvailable={previewAvailable}
+              />}
+          </main>
+        </div>
+      </section>
+      <aside className={css.copilot} data-ai-panel data-open={copilotOpen || undefined} aria-label="AI 副驾驶">
+        <header className={css.copilotHeader}>
+          <div><span className={css.kicker}>DEEPSEEK HARNESS</span><h2>AI 副驾驶</h2></div>
+          <span className={css.liveDot}>只读上下文</span>
+        </header>
+        <div className={css.bindingCard}><span>当前 Session</span><strong>{sessionId ?? '未选择 Session'}</strong><small>{selected ? `${selected.id} · ${selected.title || selected.id}` : '尚未绑定题目'}</small></div>
+        {selectedReport && <div className={css.copilotSummary} aria-label="题目验证上下文">
+          <span>题目验证上下文</span>
+          <strong>{selectedReport.aggregateConstraints?.state ?? '约束待检查'} · {selectedReport.judgeQa?.state ?? 'QA 未配置'}</strong>
+          <small>数据组 {selectedReport.groups?.length ?? 0} · 测试点 {selectedReport.tests?.total?.cases ?? '—'} · 校准 {selectedReport.calibration?.state ?? 'missing'}</small>
+          <div className={css.copilotLinks} aria-label="副驾驶定位">
+            <button type="button" data-target-tab="健康与评测" onClick={() => { setTab('健康与评测') }}>查看健康</button>
+            <button type="button" data-target-tab="题面" onClick={() => { setTab('题面') }}>查看题面</button>
+          </div>
+        </div>}
+        <div className={css.conversationSlot}>
+          {children ?? <div className={css.emptyConversation}>当前 Session 尚无 AI 消息。选择题目只改变上下文，不会创建或修改会话。</div>}
+        </div>
+      </aside>
+    </div>
+  )
+}

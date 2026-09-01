@@ -34,6 +34,9 @@ function forwardedEventContracts(ctx: Context): void {
   ctx.remote.$on('agent-preset/selected', (sessionId, agentPreset) => {
     void sessionId; void agentPreset
   })
+  ctx.remote.$on('probhub/tab-requested', (sessionId, problemId, tab, reason, source) => {
+    void sessionId; void problemId; void tab; void reason; void source
+  })
   // @ts-expect-error -- client-local event outside the allowlist
   ctx.remote.$on('slots/changed', () => {})
   // @ts-expect-error -- declared host event the allowlist does not select
@@ -115,11 +118,16 @@ describe('wire event bridge', () => {
       rpcId: 'r5' as never,
       payload: { type: 'host/remote-event', event: 'nobody/listening', args: ['ignored'] },
     })
+    bench.sinks?.onHostEnvelope?.({
+      rpcId: 'r6' as never,
+      payload: { type: 'host/remote-event', event: 'probhub/tab-requested', args: ['s1', 'A01', 'health', 'tool-result', 'probhub_report'] },
+    })
 
     expect(seen).toEqual([
       ['settings/document-updated', 'llm-pi-ai', 7],
       ['credentials/reference-updated', 'OPENAI_API_KEY'],
       ['nobody/listening', 'ignored'],
+      ['probhub/tab-requested', 's1', 'A01', 'health', 'tool-result', 'probhub_report'],
     ])
   })
 

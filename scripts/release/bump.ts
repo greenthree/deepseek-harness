@@ -4,7 +4,9 @@
  * ([rationale](../../.agents/notes/implemented/process/2026-08-10-npm-release-sequences.md)).
  *
  * The dsh family shares one version across its publishable members, private
- * package manifests, and the workspace root:
+ * package manifests, and the workspace root. The standalone probhub family
+ * shares one version across its Host and Bundle members without changing the
+ * dsh root version:
  * `major`, `minor`, `patch`, or an explicit `x.y.z` (including a prerelease such
  * as `0.0.1-rc.1`). The vendored family has one version line per package, but
  * every release advances and publishes the complete family so the next release
@@ -32,7 +34,7 @@ const ALWAYS_PUBLISHED = ['package.json', 'README*', 'LICENSE*', 'LICENCE*'] as 
  */
 const BUILD_INPUTS = ['src/**', 'tsconfig*.json', 'tsdown.config.*', 'build.config.*'] as const
 
-/** Release types the dsh family accepts besides an explicit version. */
+/** Release types shared families accept besides an explicit version. */
 const RELEASE_TYPES = ['major', 'minor', 'patch'] as const
 
 /** The workspace root manifest, which carries the dsh family's version. */
@@ -321,6 +323,33 @@ export function planShared(
 }
 
 /**
+ * Plan an independent shared-family rewrite without touching the workspace root.
+ * @param family - the independent family.
+ * @param members - the family's members.
+ * @param request - `major`, `minor`, `patch`, or an explicit version.
+ * @returns The manifests to rewrite and the shared target version.
+ */
+export function planIndependentShared(
+  family: ReleaseFamily,
+  members: readonly ReleaseMember[],
+  request: string,
+): { planned: PlannedVersion[]; version: string } {
+  const [first] = members
+  if (first === undefined) throw new Error(`release family ${family.id} has no members`)
+  const version = nextSharedVersion(first.version, request)
+  return {
+    version,
+    planned: members.map(member => ({
+      manifestPath: `${member.directory}/package.json`,
+      label: member.directory,
+      from: member.version,
+      to: version,
+      tag: family.tagFor({ ...member, version }),
+    })),
+  }
+}
+
+/**
  * Plan the vendored family's rewrite: every package advances together while
  * retaining its own version line and tag.
  * @param family - the vendored family.
@@ -362,7 +391,7 @@ function main(): void {
     },
     allowPositionals: true,
   })
-  if (values.family === undefined) throw new Error('usage: bump.ts --family <dsh|vendor> [version]')
+  if (values.family === undefined) throw new Error('usage: bump.ts --family <dsh|probhub|vendor> [version]')
 
   const family = releaseFamily(values.family)
   const root = process.cwd()
@@ -380,6 +409,15 @@ function main(): void {
     const shared = planShared(family, root, members, request)
     planned = shared.planned
     sharedVersion = shared.version
+  } else if (family.id === 'probhub') {
+    const request = positionals[0]
+    if (request === undefined) throw new Error('usage: release:probhub <major|minor|patch|x.y.z>')
+    if (values.prerelease !== undefined) {
+      throw new Error('release:probhub takes the prerelease in its version argument, as in 0.1.1-rc.3')
+    }
+    const independent = planIndependentShared(family, members, request)
+    planned = independent.planned
+    sharedVersion = independent.version
   } else {
     if (positionals.length > 0) throw new Error('release:vendor takes no version: each package increments its own patch')
     if (values.prerelease !== undefined && !/^[0-9A-Za-z.-]+$/.test(values.prerelease)) {

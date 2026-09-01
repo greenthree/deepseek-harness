@@ -2622,6 +2622,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'options', description: 'the full request. A LOOP-built request carries the process-local {@link markAgentLoopRequest} identity and arrives deep-frozen (mutation throws): its content is a pure function of the session log (the reconstructability Agent Note), so listeners read it, never rewrite it. Hand-built calls do not carry that marker; their messages already obey the immutable creation contract.' }],
   },
   {
+    name: 'probhub/tab-requested',
+    mode: 'emit',
+    signature: '\'probhub/tab-requested\'(sessionId: SessionId, problemId: string, tab: ProbHubTab, reason: ProbHubTabRequestReason, source?: string): void',
+    summary: 'Ask the current Client workbench to locate one already-known problem tab.',
+    description: 'Ask the current Client workbench to locate one already-known problem tab. The event is a one-way UI hint: it never selects a workspace, mutates source files, or invokes a Core operation. Host producers must derive `sessionId` from the calling Agent and validate `problemId` before emit.',
+    parameters: [{ name: 'sessionId', description: 'the calling Agent\'s shared Session identity.' }, { name: 'problemId', description: 'a validated Schema v1 problem id.' }, { name: 'tab', description: 'stable tab key (`statement`, `health`, or `pdf`).' }, { name: 'reason', description: 'whether the hint came from an AI suggestion or tool result.' }, { name: 'source', description: 'optional bounded producer/tool name for diagnostics.' }],
+  },
+  {
     name: 'session-telemetry/record',
     mode: 'waterfall',
     signature: '\'session-telemetry/record\'(record: SessionTelemetryRecord, next: () => SessionTelemetryRecord): SessionTelemetryRecord',
@@ -3848,6 +3856,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PreToolDecision',
     declaration: 'export type PreToolDecision = {\n    kind: \'allow\';\n} | {\n    kind: \'deny\';\n    reason: string;\n} | {\n    kind: \'ask\';\n    reason?: string;\n};',
+  },
+  {
+    name: 'ProbHubTab',
+    declaration: 'export type ProbHubTab = \'statement\' | \'health\' | \'pdf\';',
+  },
+  {
+    name: 'ProbHubTabRequestReason',
+    declaration: 'export type ProbHubTabRequestReason = \'ai-suggestion\' | \'tool-result\';',
   },
   {
     name: 'ProjectionChangeListener',

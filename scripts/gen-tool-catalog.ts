@@ -6,7 +6,7 @@
  * `.agents/notes/implemented/process/2026-07-02-tool-schema-catalog.md`.
  */
 
-import { globSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, globSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
@@ -58,6 +58,7 @@ import * as ToolLsp from '@deepseek-ai/dsh-tool-lsp'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
 import * as ToolSessionQuery from '@deepseek-ai/dsh-tool-session-query'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
+import * as ToolProbhub from '@greenthree/dsh-host-probhub/tools'
 import type TeamService from '@deepseek-ai/dsh-experimental-agent-team'
 import * as ToolTeam from '@deepseek-ai/dsh-experimental-tool-agent-team'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
@@ -524,6 +525,19 @@ const TOOL_PACKAGES: ToolPackage[] = [
       'The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers\' `ctx.jobs.start()`.',
   },
   {
+    pkg: '@greenthree/dsh-host-probhub/tools',
+    dir: 'host-probhub',
+    source: 'packages/host/probhub/src/tools.ts',
+    requires: ['ctx.tools', 'ctx.jobs', 'ctx.systemPrompt', 'ProbHub Core subprocess/sandbox services at execution time'],
+    writes: ['tool/call', 'ctx.jobs background record', 'ProbHub Core caches/evidence/checkpoints/generations/formal artifacts at execution time', 'tool/result'],
+    async mount(ctx) {
+      await ctx.plugin(LocalJobRegistry)
+      await ctx.plugin(ToolProbhub)
+    },
+    note:
+      'Optional host subpath consumer for Schema v1 ProbHub validation and delivery. Background writers (probhub_judge, probhub_stress, probhub_judge_qa, probhub_mutation, probhub_checkpoint, probhub_seal, probhub_assemble, and probhub_build) derive the current Session workspace, require an already-authorized workspace-write policy, and return generic job ids; probhub_assemble may create a draft checkpoint when one is missing; probhub_build additionally requires confirm: true and the normal approval seam because it publishes formal PDF, ZIP, metadata, and Manifest artifacts. Read-only probhub_generation_status, probhub_report, and probhub_verify_package return bounded projections; verify-package derives and validates the canonical workspace ZIP and accepts no arbitrary path. Collect or stop background jobs with the job tools; arbitrary paths, --against, and --fixate are not accepted.',
+  },
+  {
     pkg: '@deepseek-ai/dsh-experimental-tool-agent-team',
     dir: 'tool-agent-team',
     source: 'packages/experimental/tool-agent-team/src/index.ts',
@@ -634,7 +648,13 @@ export type ToolCatalog = CatalogPackage[]
  * `scanRoot` defaults to the repo root; a test may point it at a fixture tree.
  */
 export function assertManifestComplete(packages: ToolPackage[] = TOOL_PACKAGES, scanRoot: string = root): void {
-  const onDisk = globSync('packages/*/tool-*', { cwd: scanRoot }).map(p => basename(p)).sort()
+  const onDisk = [
+    ...globSync('packages/*/tool-*', { cwd: scanRoot }).map(p => basename(p)),
+    // Host consumers may expose model-facing tools from a subpath of a host
+    // bridge rather than a `tool-*` package. Keep this explicit so such a
+    // contribution is still covered by the completeness gate.
+    ...(existsSync(resolve(scanRoot, 'packages/host/probhub/src/tools.ts')) ? ['host-probhub'] : []),
+  ].sort()
   const listed = new Set(packages.map(p => p.dir))
   const missing = onDisk.filter(dir => !listed.has(dir))
   if (missing.length > 0) {
@@ -748,7 +768,7 @@ export function render(catalog: ToolCatalog): string {
     '',
     'This file is GENERATED and verified fresh by `pnpm run verify-tool-catalog` (part of `doc-sync`) — do not edit it by hand. Unlike the cordis catalog (a pure source-AST pass), this generator BOOTS each tool plugin on a real context and reads `ctx.tools.schemas()`, because a tool schema is not statically knowable (runtime-spread enums, concatenated descriptions, config-driven names, raw-JSON-Schema MCP tools). A completeness guard globs `packages/*/tool-*` and fails if any package is missing from the generator\'s boot manifest, so a new tool cannot be silently undocumented. See [the tool-schema-catalog Agent Note](../.agents/notes/implemented/process/2026-07-02-tool-schema-catalog.md).',
     '',
-    'Scope: shipped product tools under `packages/*/tool-*`, each booted with its DEFAULT config, except where a Config field is REQUIRED with no default — there the generator must choose, and the per-package note records which branch this page shows. The registered tool NAME can be a load-time config (e.g. `tool-subagent`\'s `toolName`), so a deployment may expose a package under a different or additional name — a per-package note records those shipped aliases where they exist. The `examples/` demo tools (e.g. `echo`) are excluded, matching the cordis catalog\'s packages-only scope.',
+    'Scope: shipped product tools under `packages/*/tool-*` plus explicitly catalogued host consumers, each booted with its DEFAULT config, except where a Config field is REQUIRED with no default — there the generator must choose, and the per-package note records which branch this page shows. The registered tool NAME can be a load-time config (e.g. `tool-subagent`\'s `toolName`), so a deployment may expose a package under a different or additional name — a per-package note records those shipped aliases where they exist. The `examples/` demo tools (e.g. `echo`) are excluded.',
     '',
     '## Tool Package Map',
     '',

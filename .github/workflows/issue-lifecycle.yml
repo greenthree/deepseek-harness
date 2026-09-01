@@ -36,6 +36,10 @@ concurrency:
 jobs:
   lifecycle:
     name: Issue lifecycle
+    # The lifecycle mutates DeepSeek's organization Project through an App
+    # token that is intentionally absent from personal forks. Skip only this
+    # organization-bound job in greenthree's fork; upstream behavior is intact.
+    if: github.repository_owner != 'greenthree'
     # Runs on every pull_request_review event so the check reports success rather
     # than a gray "skipped" segment. The token-creating and board-mutating steps
     # are gated at step level (a skipped step does not gray the job): only a
