@@ -105,7 +105,14 @@ function main(): void {
     // that cannot install them must still start — which is what optional means
     // here. Their entry package is a plain dependency of dsh-sandbox-local, so
     // its tarball is supplied through --from.
-    const installArgs = ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional']
+    // Do not let npm's automatic peer installation hide a missing production
+    // dependency.  The packed executable must carry every module it imports
+    // directly; `--legacy-peer-deps` makes this verification exercise the
+    // stricter consumer that does not materialize peers implicitly.
+    const installArgs = [
+      'install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional',
+      '--legacy-peer-deps',
+    ]
     const npm = npmInvocation(installArgs)
     capture(npm.command, npm.args, { cwd: consumerRoot, env: environment })
 
