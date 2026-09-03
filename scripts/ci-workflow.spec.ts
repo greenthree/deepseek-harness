@@ -506,7 +506,8 @@ describe('npm release workflows', () => {
       .filter((run): run is string => typeof run === 'string')
     expect(packCommands).toContain('pnpm run release:verify --family probhub')
     expect(packCommands).toContain('pnpm run release:pack --family probhub --out dist/npm-probhub')
-    expect(packCommands).toContain('pnpm --filter @greenthree/dsh-probhub run bundle')
+    expect(packCommands).toContain('pnpm run build')
+    expect(packCommands).toContain('pnpm exec vitest run --config vitest.e2e.config.ts apps/cli/tests/built-bin.e2e.ts -t "packed ProbHub Bundle"')
     expect(publishJob.environment).toBe('npm-publish')
     expect(publishJob.concurrency).toMatchObject({ group: 'Release-publish' })
     const publishCommands = publishJob.steps

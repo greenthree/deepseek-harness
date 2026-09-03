@@ -1,6 +1,6 @@
 import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startMockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
 import { execa } from 'execa'
@@ -329,6 +329,21 @@ async function packWorkspacePackage(directory: string, destination: string): Pro
   const [tarball] = globSync(filename, { cwd: destination })
   if (tarball === undefined) throw new Error(`pnpm pack produced no tarball for ${directory}`)
   return join(destination, tarball)
+}
+
+/** Locate a release workflow tarball by the package manifest in the checkout. */
+function findPackedReleasePackage(directory: string, packageDirectory: string): string {
+  const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8')) as {
+    name?: unknown
+    version?: unknown
+  }
+  if (typeof manifest.name !== 'string' || typeof manifest.version !== 'string') {
+    throw new Error(`package manifest is missing name/version: ${packageDirectory}`)
+  }
+  const filename = `${manifest.name.replace(/^@/u, '').replace('/', '-')}-${manifest.version}.tgz`
+  const [tarball] = globSync(filename, { cwd: directory })
+  if (tarball === undefined) throw new Error(`release directory produced no tarball for ${manifest.name}@${manifest.version}`)
+  return resolve(directory, tarball)
 }
 
 describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', () => {
@@ -735,9 +750,16 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
     const packDir = mkdtempSync(join(tmpdir(), 'dsh-probhub-packed-tarballs-'))
     const hostDir = join(repoRoot, 'packages/host/probhub')
     const bundleDir = join(repoRoot, 'packages/bundle/probhub')
+    const releaseDir = process.env.DSH_PROBHUB_PACKED_DIR === undefined
+      ? undefined
+      : resolve(repoRoot, process.env.DSH_PROBHUB_PACKED_DIR)
     try {
-      const hostTarball = await packWorkspacePackage(hostDir, packDir)
-      const bundleTarball = await packWorkspacePackage(bundleDir, packDir)
+      const hostTarball = releaseDir === undefined
+        ? await packWorkspacePackage(hostDir, packDir)
+        : findPackedReleasePackage(releaseDir, hostDir)
+      const bundleTarball = releaseDir === undefined
+        ? await packWorkspacePackage(bundleDir, packDir)
+        : findPackedReleasePackage(releaseDir, bundleDir)
       const init = await runBuiltBin(
         ['--profile', 'web', '--dump-default-config'],
         { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
