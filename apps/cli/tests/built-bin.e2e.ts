@@ -1,6 +1,6 @@
 import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startMockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
 import { execa } from 'execa'
@@ -343,7 +343,7 @@ function findPackedReleasePackage(directory: string, packageDirectory: string): 
   const filename = `${manifest.name.replace(/^@/u, '').replace('/', '-')}-${manifest.version}.tgz`
   const [tarball] = globSync(filename, { cwd: directory })
   if (tarball === undefined) throw new Error(`release directory produced no tarball for ${manifest.name}@${manifest.version}`)
-  return join(directory, tarball)
+  return resolve(directory, tarball)
 }
 
 describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', () => {
@@ -750,7 +750,9 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
     const packDir = mkdtempSync(join(tmpdir(), 'dsh-probhub-packed-tarballs-'))
     const hostDir = join(repoRoot, 'packages/host/probhub')
     const bundleDir = join(repoRoot, 'packages/bundle/probhub')
-    const releaseDir = process.env.DSH_PROBHUB_PACKED_DIR
+    const releaseDir = process.env.DSH_PROBHUB_PACKED_DIR === undefined
+      ? undefined
+      : resolve(repoRoot, process.env.DSH_PROBHUB_PACKED_DIR)
     try {
       const hostTarball = releaseDir === undefined
         ? await packWorkspacePackage(hostDir, packDir)
