@@ -45,14 +45,16 @@ jobs:
       - name: Verify ProbHub release version
         run: pnpm run release:verify --family probhub
 
-      - name: Build Host artifacts
-        run: pnpm run build:lib:host
-
-      - name: Build ProbHub Bundle
-        run: pnpm --filter @greenthree/dsh-probhub run bundle
+      - name: Build release and Web artifacts
+        run: pnpm run build
 
       - name: Pack ProbHub release tarballs
         run: pnpm run release:pack --family probhub --out dist/npm-probhub
+
+      - name: Verify packed profile installation
+        env:
+          DSH_PROBHUB_PACKED_DIR: dist/npm-probhub
+        run: pnpm exec vitest run --config vitest.e2e.config.ts apps/cli/tests/built-bin.e2e.ts -t "packed ProbHub Bundle"
 
       - uses: actions/upload-artifact@v4
         with:
