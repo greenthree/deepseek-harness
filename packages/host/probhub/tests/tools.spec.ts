@@ -554,4 +554,70 @@ describe('ProbHub background tools', () => {
     const snapshot = await ctx.jobs.wait(id, 1000, agent)
     expect(snapshot.status).toBe('killed')
   })
+
+  it('parses NDJSON event stream and completes with final result projection', async () => {
+    const streamOutput = [
+      JSON.stringify({ protocol_schema_version: 1, type: 'started', operation: 'stress', problem_id: 'A01', total: 10, unit: 'rounds' }),
+      JSON.stringify({ protocol_schema_version: 1, type: 'progress', operation: 'stress', problem_id: 'A01', completed: 5, total: 10, unit: 'rounds' }),
+      JSON.stringify({
+        protocol_schema_version: 1,
+        type: 'final',
+        operation: 'stress',
+        problem_id: 'A01',
+        ok: true,
+        status: 'passed',
+        result: { ok: true, problems: { A01: { ok: true, status: 'passed' } } },
+      }),
+    ].join('\n')
+    const { ctx, agent, spawned } = await setup(streamOutput, 'workspace-write', true)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('stress-stream'),
+      name: 'probhub_stress',
+      arguments: { problem_id: 'A01', rounds: 10 },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--event-stream', '--json', 'stress', 'A01']))
+    const snapshot = await ctx.jobs.wait(id, 1000, agent)
+    expect(snapshot.status).toBe('completed')
+    const text = ctx.jobs.read(id, agent).text
+    expect(text).toContain('"ok":true')
+  })
+
+  it('surfaces incremental progress notice while job is running', async () => {
+    let readCount = 0
+    const progressOutput = () => {
+      readCount++
+      if (readCount === 1) {
+        return JSON.stringify({ protocol_schema_version: 1, type: 'progress', operation: 'stress', problem_id: 'A01', completed: 3, total: 10, unit: 'rounds' }) + '\n'
+      }
+      return JSON.stringify({
+        protocol_schema_version: 1,
+        type: 'final',
+        operation: 'stress',
+        problem_id: 'A01',
+        ok: true,
+        status: 'passed',
+        result: { ok: true, problems: { A01: { ok: true, status: 'passed' } } },
+      }) + '\n'
+    }
+    const { ctx, agent, spawned } = await setup(progressOutput, 'workspace-write', false)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('stress-progress'),
+      name: 'probhub_stress',
+      arguments: { problem_id: 'A01', rounds: 10 },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    const midText = ctx.jobs.read(id, agent).text
+    expect(midText).toBe('[stress A01] progress: 3/10 rounds')
+    spawned[0]!.finish!({ exitCode: 0, signal: null })
+    await ctx.jobs.wait(id, 1000, agent)
+    const finalText = ctx.jobs.read(id, agent).text
+    expect(finalText).toContain('"ok":true')
+  })
 })

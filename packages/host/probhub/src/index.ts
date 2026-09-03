@@ -1794,6 +1794,47 @@ function sameFilesystemEntry(left: string, right: string): boolean {
   return normalize(left).toLowerCase() === normalize(right).toLowerCase()
 }
 
+interface EventFrame {
+  readonly protocol_schema_version: 1
+  readonly type: 'started' | 'progress' | 'final' | 'cancelled'
+  readonly operation?: string
+  readonly problem_id?: string
+  readonly completed?: number
+  readonly total?: number
+  readonly unit?: string
+  readonly detail?: Record<string, unknown>
+  readonly result?: unknown
+  readonly ok?: boolean
+  readonly status?: string
+  readonly reason?: string
+}
+
+function parseEventStreamLine(line: string): EventFrame | undefined {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return undefined
+  try {
+    const obj = JSON.parse(trimmed) as unknown
+    if (obj !== null && typeof obj === 'object' && !Array.isArray(obj)) {
+      const record = obj as Record<string, unknown>
+      if (record.protocol_schema_version === 1 && typeof record.type === 'string') {
+        return record as unknown as EventFrame
+      }
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
+function formatProgressNotice(event: EventFrame): string {
+  const op = event.operation ?? 'job'
+  const id = event.problem_id ? ` ${event.problem_id}` : ''
+  const completed = event.completed !== undefined ? String(event.completed) : '?'
+  const total = event.total !== undefined ? `/${event.total}` : ''
+  const unit = event.unit ? ` ${event.unit}` : ''
+  return `[${op}${id}] progress: ${completed}${total}${unit}`
+}
+
 /**
  * Start one detached, workspace-write Core operation as a generic job producer.
  * The producer owns only the child process and its cancellation marker; Core
@@ -1837,13 +1878,17 @@ export function createCoreJobHooks(
   let outputRead = false
   let cancelRequested = false
   let cancelError: string | undefined
+  let stdoutOffset = 0
+  let latestProgress: string | undefined
   const wasCancelled = (): boolean => cancelRequested
   try {
     const coreScript = resolveCoreScript(config.command)
+    const supportsEventStream = request.operation === 'stress' || request.operation === 'mutation' || request.operation === 'judge'
     const commandArgv = [
       process.execPath,
       coreScript,
       '--workspace', workspace,
+      ...(supportsEventStream ? ['--event-stream'] : []),
       '--json', request.operation,
       ...(request.problemIds ?? (request.problemId === undefined ? [] : [request.problemId])),
       ...(request.args ?? []),
@@ -1903,7 +1948,20 @@ export function createCoreJobHooks(
         const text = stdout?.text ?? ''
         if (processOutcome.signal === null && processOutcome.exitCode !== null && stdout?.lossy !== true && text.length > 0) {
           try {
-            const value = JSON.parse(text) as unknown
+            let value: unknown
+            let finalFrame: EventFrame | undefined
+            const lines = text.split('\n')
+            for (const line of lines) {
+              const frame = parseEventStreamLine(line)
+              if (frame?.type === 'final' && frame.result !== undefined) {
+                finalFrame = frame
+              }
+            }
+            if (finalFrame !== undefined) {
+              value = finalFrame.result
+            } else {
+              value = JSON.parse(text) as unknown
+            }
             safeOutput = projectJobOutput(value, request.operation)
             const detail = coreOutcomeDetail(value)
             outcome = coreCleanupFailed(value)
@@ -1947,9 +2005,30 @@ export function createCoreJobHooks(
     },
     done,
     readOutput: () => {
-      if (outputRead || safeOutput.length === 0) return ''
-      outputRead = true
-      return safeOutput
+      if (handle.collected.stdout !== undefined) {
+        const read = handle.collected.stdout.readFrom(stdoutOffset)
+        stdoutOffset = read.nextOffset
+        if (read.text.length > 0) {
+          const lines = read.text.split('\n')
+          for (const line of lines) {
+            const frame = parseEventStreamLine(line)
+            if (frame?.type === 'progress') {
+              latestProgress = formatProgressNotice(frame)
+            }
+          }
+        }
+      }
+      if (safeOutput.length > 0) {
+        if (outputRead) return ''
+        outputRead = true
+        return safeOutput
+      }
+      if (latestProgress !== undefined) {
+        const p = latestProgress
+        latestProgress = undefined
+        return p
+      }
+      return ''
     },
   }
 }
