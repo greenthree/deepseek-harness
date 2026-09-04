@@ -620,4 +620,78 @@ describe('ProbHub background tools', () => {
     const finalText = ctx.jobs.read(id, agent).text
     expect(finalText).toContain('"ok":true')
   })
+
+  it('handles split lines across readOutput chunks without losing progress notices', async () => {
+    let readCount = 0
+    const fullLine = JSON.stringify({
+      protocol_schema_version: 1,
+      type: 'progress',
+      operation: 'stress',
+      problem_id: 'A01',
+      completed: 4,
+      total: 10,
+      unit: 'rounds',
+    }) + '\n'
+    const splitIndex = 25
+    const chunkOutput = () => {
+      readCount++
+      if (readCount === 1) {
+        return fullLine.slice(0, splitIndex)
+      }
+      if (readCount === 2) {
+        return fullLine.slice(splitIndex)
+      }
+      return JSON.stringify({
+        protocol_schema_version: 1,
+        type: 'final',
+        operation: 'stress',
+        problem_id: 'A01',
+        ok: true,
+        status: 'passed',
+        result: { ok: true, problems: { A01: { ok: true, status: 'passed' } } },
+      }) + '\n'
+    }
+    const { ctx, agent, spawned } = await setup(chunkOutput, 'workspace-write', false)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('stress-split-chunk'),
+      name: 'probhub_stress',
+      arguments: { problem_id: 'A01', rounds: 10 },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+
+    // First read: partial line buffered in stdoutCarry, no full line yet
+    const firstRead = ctx.jobs.read(id, agent).text
+    expect(firstRead).toBe('')
+
+    // Second read: second half arrives with newline, completing the progress notice
+    const secondRead = ctx.jobs.read(id, agent).text
+    expect(secondRead).toBe('[stress A01] progress: 4/10 rounds')
+
+    spawned[0]!.finish!({ exitCode: 0, signal: null })
+    const snapshot = await ctx.jobs.wait(id, 1000, agent)
+    expect(snapshot.status).toBe('completed')
+  })
+
+  it('maps cancelled stream frame to killed/cancelled job outcome', async () => {
+    const cancelledStreamOutput = [
+      JSON.stringify({ protocol_schema_version: 1, type: 'started', operation: 'stress', problem_id: 'A01', total: 10, unit: 'rounds' }),
+      JSON.stringify({ protocol_schema_version: 1, type: 'cancelled', operation: 'stress', problem_id: 'A01', reason: 'cancellation_requested', completed: 3, total: 10 }),
+    ].join('\n')
+    const { ctx, agent } = await setup(cancelledStreamOutput, 'workspace-write', true)
+    const result = await ctx.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('stress-cancelled-stream'),
+      name: 'probhub_stress',
+      arguments: { problem_id: 'A01', rounds: 10 },
+      agent,
+    })
+    if (result.isError) throw new Error(result.content.map(block => block.type === 'text' ? block.text : '').join(' '))
+    const id = (result.value as { jobId: string }).jobId as never
+    const snapshot = await ctx.jobs.wait(id, 1000, agent)
+    expect(snapshot.status).toBe('killed')
+    expect(snapshot.detail).toBe('cancelled')
+  })
 })

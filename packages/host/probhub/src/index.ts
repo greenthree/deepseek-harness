@@ -1880,6 +1880,7 @@ export function createCoreJobHooks(
   let cancelError: string | undefined
   let stdoutOffset = 0
   let latestProgress: string | undefined
+  let stdoutCarry = ''
   const wasCancelled = (): boolean => cancelRequested
   try {
     const coreScript = resolveCoreScript(config.command)
@@ -1950,15 +1951,27 @@ export function createCoreJobHooks(
           try {
             let value: unknown
             let finalFrame: EventFrame | undefined
+            let cancelledFrame: EventFrame | undefined
             const lines = text.split('\n')
             for (const line of lines) {
               const frame = parseEventStreamLine(line)
               if (frame?.type === 'final' && frame.result !== undefined) {
                 finalFrame = frame
+              } else if (frame?.type === 'cancelled') {
+                cancelledFrame = frame
               }
             }
             if (finalFrame !== undefined) {
               value = finalFrame.result
+            } else if (cancelledFrame !== undefined) {
+              value = {
+                ok: false,
+                code: 'cancelled',
+                status: 'cancelled',
+                reason: cancelledFrame.reason ?? 'cancellation_requested',
+                operation: cancelledFrame.operation,
+                problem_id: cancelledFrame.problem_id,
+              }
             } else {
               value = JSON.parse(text) as unknown
             }
@@ -2009,12 +2022,20 @@ export function createCoreJobHooks(
         const read = handle.collected.stdout.readFrom(stdoutOffset)
         stdoutOffset = read.nextOffset
         if (read.text.length > 0) {
-          const lines = read.text.split('\n')
-          for (const line of lines) {
-            const frame = parseEventStreamLine(line)
-            if (frame?.type === 'progress') {
-              latestProgress = formatProgressNotice(frame)
+          const chunk = stdoutCarry + read.text
+          const lastNewline = chunk.lastIndexOf('\n')
+          if (lastNewline !== -1) {
+            const completeChunk = chunk.slice(0, lastNewline)
+            stdoutCarry = chunk.slice(lastNewline + 1)
+            const lines = completeChunk.split('\n')
+            for (const line of lines) {
+              const frame = parseEventStreamLine(line)
+              if (frame?.type === 'progress') {
+                latestProgress = formatProgressNotice(frame)
+              }
             }
+          } else {
+            stdoutCarry = chunk
           }
         }
       }
